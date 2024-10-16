@@ -182,7 +182,6 @@ void decoder::decode_header(In& in, In e, header_view& out) {
   handle_protocol_error();
 }
 
-// returns status code
 int decoder::decode_response_status(In& in, In e) {
   if (*in & 0b1000'0000) {
     // fast path, fully indexed

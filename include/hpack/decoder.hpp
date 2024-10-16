@@ -110,7 +110,7 @@ struct header_view {
 
   // header may be not present if default contructed or table_size_update happen instead of header
   explicit operator bool() const noexcept {
-    return name || value;
+    return !!name;
   }
 
   header_view& operator=(header_view&&) = default;
@@ -142,6 +142,7 @@ struct decoder {
   void decode_header(In& in, In e, header_view& out);
 
   // returns status code
+  // its always first header of response, so 'in' must point to first byte of headers block
   int decode_response_status(In& in, In e);
 };
 
