@@ -6,7 +6,7 @@ encode:
 ```cpp
 #include <hpack/hpack.hpp>
 
-void encode_my_headers(hpack::encoder& enc, std::vector<hpack::bytes>& bytes;) {
+void encode_my_headers(hpack::encoder& enc, std::vector<hpack::bytes>& bytes) {
   // memory effective by default
   enc.encode("name", "value", std::back_inserter(bytes));
   // or by hands
