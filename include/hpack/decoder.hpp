@@ -121,6 +121,7 @@ struct header_view {
   }
 };
 
+// precondition: in != e
 void decode_string(In& in, In e, decoded_string& out);
 
 struct decoder {
@@ -139,10 +140,12 @@ struct decoder {
    https://www.rfc-editor.org/rfc/rfc7540#section-8.1.2.5
    and protocol error if decoded header name is not lowercase
   */
+  // precondition: in != e
   void decode_header(In& in, In e, header_view& out);
 
   // returns status code
   // its always first header of response, so 'in' must point to first byte of headers block
+  // precondition: in != e
   int decode_response_status(In& in, In e);
 };
 

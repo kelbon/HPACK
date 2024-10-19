@@ -153,6 +153,7 @@ static size_type decode_dynamic_table_size_update(In& in, In e) noexcept {
 }
 
 void decode_string(In& in, In e, decoded_string& out) {
+  assert(in != e);
   bool is_huffman = *in & 0b1000'0000;
   size_type str_len = decode_integer(in, e, 7);
   if (str_len > std::distance(in, e))
@@ -165,6 +166,7 @@ void decode_string(In& in, In e, decoded_string& out) {
 }
 
 void decoder::decode_header(In& in, In e, header_view& out) {
+  assert(in != e);
   if (*in & 0b1000'0000)
     return decode_header_fully_indexed(in, e, dyntab, out);
   if (*in & 0b0100'0000)
@@ -183,6 +185,7 @@ void decoder::decode_header(In& in, In e, header_view& out) {
 }
 
 int decoder::decode_response_status(In& in, In e) {
+  assert(in != e);
   if (*in & 0b1000'0000) {
     // fast path, fully indexed
     auto in_before = in;
