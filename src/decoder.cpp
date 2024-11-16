@@ -1,5 +1,6 @@
 
 #include <charconv>
+#include <bit>
 
 #include "hpack/integers.hpp"
 #include "hpack/decoder.hpp"
