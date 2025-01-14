@@ -4,8 +4,11 @@ project(HPACK LANGUAGES CXX)
 ### options ###
 
 option(HPACK_ENABLE_TESTING "enables testing" OFF)
+option(HPACK_USE_CPM "turn off to not download boost" ON)
 
 ### dependecies ###
+
+if(HPACK_USE_CPM)
 
 include(cmake/get_cpm.cmake)
 
@@ -18,6 +21,8 @@ CPMAddPackage(
 )
 unset(BOOST_INCLUDE_LIBRARIES)
 find_package(Boost 1.84 COMPONENTS intrusive REQUIRED)
+
+endif()
 
 ### hpacklib ###
 
