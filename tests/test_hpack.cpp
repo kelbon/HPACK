@@ -334,8 +334,10 @@ TEST(huffman_rand) {
 }
 
 TEST(huffman_table_itself) {
-#define HUFFMAN_TABLE(index, bits, bitcount) \
-  { error_if(hpack::huffman_decode_table_find(hpack::sym_info_t{0b##bits, bitcount}) != uint16_t(index)); }
+#define HUFFMAN_TABLE(index, bits, bitcount)                                                              \
+  {                                                                                                       \
+    error_if(hpack::huffman_decode_table_find(hpack::sym_info_t{0b##bits, bitcount}) != uint16_t(index)); \
+  }
 #include "hpack/huffman_table.def"
 }
 
