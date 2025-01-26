@@ -40,7 +40,7 @@ struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_lin
   static void destroy(const entry_t* e, std::pmr::memory_resource* resource) noexcept {
     assert(e && resource);
     std::destroy_at(e);
-    resource->deallocate((void*)e, e->value_end, alignof(entry_t));
+    resource->deallocate((void*)e, sizeof(entry_t) + e->value_end, alignof(entry_t));
   }
 };
 
