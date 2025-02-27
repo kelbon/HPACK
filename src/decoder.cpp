@@ -123,10 +123,6 @@ static void decode_header_fully_indexed(In& in, In e, dynamic_table_t& dyntab, h
   assert(*in & 0b1000'0000);
   index_type index = decode_integer(in, e, 7);
   table_entry entry = get_by_index(index, &dyntab);
-  // only way to get uncached value is from static table,
-  // in dynamic table empty header value ("") is a cached header
-  if (index < static_table_t::first_unused_index && entry.value.empty())
-    handle_protocol_error();
   out = entry;
 }
 
