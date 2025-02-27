@@ -71,7 +71,7 @@ struct dynamic_table_t {
 
   // min value is static_table_t::first_unused_index
   index_type current_max_index() const noexcept {
-    return entries.size() + static_table_t::first_unused_index;
+    return entries.size() + static_table_t::first_unused_index - 1;
   }
 
   find_result_t find(std::string_view name, std::string_view value) noexcept;

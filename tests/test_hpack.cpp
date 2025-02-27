@@ -676,6 +676,48 @@ TEST(decoded_string) {
   error_if(str != str);
 }
 
+TEST(dyntab2) {
+  const unsigned testarr[] = {
+      72,  130, 16,  3,   95,  139, 29,  117, 208, 98,  13,  38,  61,  76,  116, 65,  234, 15,  31,  187, 157,
+      41,  174, 227, 12,  127, 238, 229, 192, 255, 242, 227, 207, 0,   12,  85,  85,  146, 173, 84,  180, 177,
+      220, 44,  85,  42,  198, 169, 9,   29,  68,  42,  24,  100, 46,  20,  49,  178, 250, 192, 126, 89,  86,
+      104, 82,  58,  179, 210, 17,  245, 153, 121, 247, 7,   32,  72,  219, 206, 63,  162, 64,  140, 102, 106,
+      235, 89,  17,  153, 104, 205, 84,  134, 170, 111, 175, 142, 136, 42,  149, 100, 21,  63,  106, 85,  42,
+      10,  152, 16,  84,  133, 122, 172, 149, 5,   74,  237, 204, 69,  233, 168, 128, 108, 11,  210, 66,  9,
+      176, 125, 168, 130, 217, 222, 161, 210, 88,  42,  170, 201, 86,  170, 90,  127, 15,  13,  130, 11,  130,
+  };
+  hpack::decoder d(4096);
+  error_if(d.dyntab.current_max_index() != hpack::static_table_t::first_unused_index - 1);
+  d.dyntab.add_entry(":status", "201");
+  error_if(d.dyntab.current_max_index() != hpack::static_table_t::first_unused_index);
+  hpack::table_entry e;
+  e.name = ":status";
+  e.value = "201";
+  error_if(d.dyntab.get_entry(d.dyntab.current_max_index()) != e);
+  d.dyntab.add_entry("content-type", "application/json");
+  error_if(d.dyntab.get_entry(d.dyntab.current_max_index()) != e);
+  e.name = "content-type";
+  e.value = "application/json";
+  error_if(d.dyntab.get_entry(d.dyntab.current_max_index() - 1) != e);
+  bytes_t bytes;
+  for (unsigned i : testarr) {
+    bytes.push_back(hpack::byte_t(i));
+  }
+  headers_t expected = {
+      {":status", "201"},
+      {"content-type", "application/json"},
+      {"location", "http://[::1]:8800/nnrf-nfm/v1/nf-instances/316e1b39-09ff-42d7-8dc9-3896ad1c5869"},
+      {"etag", ""},
+      {"3gpp-sbi-binding", "bl=nf-set; nfset=set1.nrfset.5gc.mnc050.mcc250; servname=nnrf-nfm"},
+      {"content-length", "162"},
+  };
+  headers_t decoded;
+  hpack::decode_headers_block(d, bytes, [&](std::string_view name, std::string_view value) {
+    decoded.push_back({std::string(name), std::string(value)});
+  });
+  error_if(expected != decoded);
+}
+
 int main() {
   test_decoded_string();
   test_tg_answer();
@@ -692,4 +734,5 @@ int main() {
   test_decode_status();
   test_dynamic_table_size_update();
   test_static_table_find_by_index();
+  test_dyntab2();
 }
