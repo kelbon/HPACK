@@ -111,8 +111,7 @@ index_type dynamic_table_t::add_entry(std::string_view name, std::string_view va
 }
 
 void dynamic_table_t::update_size(size_type new_max_size) {
-  if (new_max_size > max_size())
-    throw protocol_error{};
+  // also supports rare scenario, when http2 server sends new SETTINGS frame and new size > old size
   evict_until_fits_into(new_max_size);
   _max_size = new_max_size;
 }
@@ -159,7 +158,6 @@ void dynamic_table_t::reset() noexcept {
 }
 
 void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
-  assert(bytes <= _max_size);
   size_type i = 0;
   for (; _current_size > bytes; ++i) {
     _current_size -= entry_size(*entries[i]);

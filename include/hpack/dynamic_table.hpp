@@ -87,7 +87,6 @@ struct dynamic_table_t {
   }
 
  private:
-  // precondition: bytes <= _max_size
   void evict_until_fits_into(size_type bytes) noexcept;
   // precondition: entry now in 'entries'
   index_type indexof(const entry_t& e) const noexcept;
