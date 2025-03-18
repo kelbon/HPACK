@@ -247,7 +247,9 @@ struct encoder {
     */
     auto out = noexport::adapt_output_iterator(_out);
     *out = 0b0010'0000;
-    return noexport::unadapt<O>(encode_integer(new_size, 5, out));
+    auto it = noexport::unadapt<O>(encode_integer(new_size, 5, out));
+    dyntab.update_size(new_size);
+    return it;
   }
 };
 
