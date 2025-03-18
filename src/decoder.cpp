@@ -8,17 +8,15 @@
 namespace {
 
 template <typename F>
-struct scope_fail {
+struct scope_exit {
   F foo;
-  bool failed = true;
 
-  ~scope_fail() {
-    if (failed)
-      foo();
+  ~scope_exit() {
+    foo();
   }
 };
 template <typename T>
-scope_fail(T) -> scope_fail<T>;
+scope_exit(T) -> scope_exit<T>;
 
 }  // namespace
 
@@ -89,23 +87,27 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
     // const cast because im owner of pointer (its allocated by malloc)
     char* end = decode_string_huffman(in, len, const_cast<char*>(data));
     sz = end - data;
-
-    assert(sz <= max_huffman_string_size_after_decode(sz));
   } else {
     size_t sz_to_allocate = std::bit_ceil(max_huffman_string_size_after_decode(len));
+    auto was_allocated = allocated_sz_log2;
     allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
     const char* old_data = data;
     data = (char*)malloc(sz_to_allocate);
-
-    scope_fail free_mem{[&] {
-      free((void*)data);
-      data = old_data;
-      allocated_sz_log2 = 0;
+    bool failed = true;
+    scope_exit free_mem{[&] {
+      if (failed) {
+        free((void*)data);
+        data = old_data;
+        allocated_sz_log2 = was_allocated;
+      } else {
+        if (was_allocated > 0)
+          free((void*)old_data);
+      }
     }};
     // recursive call into branch where we have enough memory
     set_huffman(ptr, len);
 
-    free_mem.failed = false;
+    failed = false;
   }
 }
 
