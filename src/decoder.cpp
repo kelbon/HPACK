@@ -184,7 +184,8 @@ void decoder::decode_header(In& in, In e, header_view& out) {
 }
 
 int decoder::decode_response_status(In& in, In e) {
-  assert(in != e);
+  if (in == e)
+    handle_protocol_error();  // empty headers block, while atleast ':status' required
   if (*in & 0b1000'0000) {
     // fast path, fully indexed
     auto in_before = in;
@@ -210,7 +211,11 @@ int decoder::decode_response_status(In& in, In e) {
   // first header of response must be required pseudoheader,
   // which is (for response) only one - ":status"
   header_view header;
-  decode_header(in, e, header);
+  do {
+    decode_header(in, e, header);
+  } while (!header && in != e);
+  if (!header)
+    handle_protocol_error();  // header block only with dynamic_table_size_update
   std::string_view code = header.value.str();
   if (header.name.str() != ":status" || code.size() != 3)
     handle_protocol_error();
