@@ -145,7 +145,6 @@ struct decoder {
 
   // returns status code
   // its always first header of response, so 'in' must point to first byte of headers block
-  // precondition: in != e
   int decode_response_status(In& in, In e);
 };
 

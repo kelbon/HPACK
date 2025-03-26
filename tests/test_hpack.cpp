@@ -718,7 +718,30 @@ TEST(dyntab2) {
   error_if(expected != decoded);
 }
 
+TEST(decode_headers_block_dyntab_update) {
+  const unsigned testarr[] = {
+      0x20, 0x88, 0x40, 0xf,  0x78, 0x2d, 0x63, 0x75, 0x73, 0x74, 0x6f, 0x6d, 0x2d,
+      0x68, 0x65, 0x61, 0x64, 0x65, 0x72, 0x5,  0x76, 0x61, 0x6c, 0x75, 0x65,
+  };
+  hpack::decoder d(0);
+  bytes_t bytes;
+  for (unsigned i : testarr) {
+    bytes.push_back(hpack::byte_t(i));
+  }
+  const auto* in = bytes.data();
+  auto* e = bytes.data() + bytes.size();
+  int status = d.decode_response_status(in, e);
+  error_if(status != 200);
+  int count = 0;
+  hpack::decode_headers_block(d, std::span(in, e), [&](std::string_view name, std::string_view value) {
+    error_if(count != 0);
+    ++count;
+    error_if(name != "x-custom-header" || value != "value");
+  });
+}
+
 int main() {
+  test_decode_headers_block_dyntab_update();
   test_decoded_string();
   test_tg_answer();
   test_encode_decode_with_eviction();
