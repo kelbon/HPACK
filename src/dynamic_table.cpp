@@ -66,6 +66,7 @@ table_entry dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::ent
 dynamic_table_t::dynamic_table_t(size_type max_size, std::pmr::memory_resource* m) noexcept
     : _current_size(0),
       _max_size(max_size),
+      _user_protocol_max_size(max_size),
       _insert_count(0),
       _resource(m ? m : std::pmr::get_default_resource()) {
 }
@@ -110,8 +111,18 @@ index_type dynamic_table_t::add_entry(std::string_view name, std::string_view va
   return static_table_t::first_unused_index;
 }
 
+void dynamic_table_t::set_user_protocol_max_size(size_type new_max_size) noexcept {
+  _user_protocol_max_size = new_max_size;
+  if (_user_protocol_max_size < max_size())
+    update_size(new_max_size);
+}
+
 void dynamic_table_t::update_size(size_type new_max_size) {
-  // also supports rare scenario, when http2 server sends new SETTINGS frame and new size > old size
+  //  "The new maximum size MUST be lower than or equal to the limit
+  // determined by the protocol using HPACK. A value that exceeds this
+  // limit MUST be treated as a decoding error"
+  if (new_max_size > _user_protocol_max_size)
+    throw HPACK_PROTOCOL_ERROR(dynamic table max size exceeds limit determined by protocol);
   evict_until_fits_into(new_max_size);
   _max_size = new_max_size;
 }
@@ -128,6 +139,7 @@ find_result_t dynamic_table_t::find(std::string_view name, std::string_view valu
   }
   return r;
 }
+
 find_result_t dynamic_table_t::find(index_type name, std::string_view value) noexcept {
   assert(name <= current_max_index());
   find_result_t r;

@@ -55,7 +55,7 @@ template <std::unsigned_integral UInt = size_type>
   // get first N bits
   auto pull = [&] {
     if (in == e)
-      handle_size_error();
+      throw HPACK_PROTOCOL_ERROR(invalid integer representation);
     int8_t i = *in;
     ++in;
     return i;
@@ -70,7 +70,7 @@ template <std::unsigned_integral UInt = size_type>
     UInt cpy = I;
     I += UInt(B & 0b0111'1111) << M;
     if (I < cpy)  // overflow
-      handle_protocol_error();
+      throw HPACK_PROTOCOL_ERROR(integer overflow);
     M += 7;
   } while (B & 0b1000'0000);
   return I;

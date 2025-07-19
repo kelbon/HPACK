@@ -29,6 +29,12 @@ struct dynamic_table_t {
   // invariant: <= _max_size
   size_type _current_size = 0;
   size_type _max_size = 0;
+  // https://datatracker.ietf.org/doc/html/rfc7541#section-6.3
+  //  "The new maximum size MUST be lower than or equal to the limit
+  // determined by the protocol using HPACK"
+  //
+  // This value is hard limit for updating '_max_size'
+  size_type _user_protocol_max_size = 0;
   size_t _insert_count = 0;
   // invariant: != nullptr
   std::pmr::memory_resource* _resource = std::pmr::get_default_resource();
@@ -44,8 +50,18 @@ struct dynamic_table_t {
   */
  public:
   dynamic_table_t() = default;
+  // `user_protocol_max_size` and `max_size()` both initialized to `max_size`
   explicit dynamic_table_t(size_type max_size,
                            std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept;
+
+  // this constructor may be used to set `user_protocol_max_size` to value other than `max_size`
+  // precondition: `protocol_max_size` <= `max_size`
+  explicit dynamic_table_t(size_type max_size, size_type protocol_max_size,
+                           std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept
+      : dynamic_table_t(max_size, m) {
+    assert(protocol_max_size >= max_size);
+    _user_protocol_max_size = protocol_max_size;
+  }
 
   dynamic_table_t(const dynamic_table_t&) = delete;
 
@@ -63,10 +79,17 @@ struct dynamic_table_t {
   size_type current_size() const noexcept {
     return _current_size;
   }
+  // Note: its current max size, not max size defined by protocol which using hpack
   size_type max_size() const noexcept {
     return _max_size;
   }
 
+  void set_user_protocol_max_size(size_type) noexcept;
+  size_type user_protocol_max_size() const noexcept {
+    return _user_protocol_max_size;
+  }
+
+  // throws if `new_max_size` > `user_protocol_max_size`
   void update_size(size_type new_max_size);
 
   // min value is static_table_t::first_unused_index
@@ -100,11 +123,11 @@ struct dynamic_table_t {
      MUST be treated as a decoding error.
   */
   if (header_index == 0) [[unlikely]]
-    handle_protocol_error();
+    throw HPACK_PROTOCOL_ERROR(invalid dynamic table header index == 0);
   if (header_index < static_table_t::first_unused_index)
     return static_table_t::get_entry(header_index);
   if (header_index > dyntab->current_max_index()) [[unlikely]]
-    handle_protocol_error();
+    throw HPACK_PROTOCOL_ERROR(invalid dynamic table header index > max);
   return dyntab->get_entry(header_index);
 }
 
