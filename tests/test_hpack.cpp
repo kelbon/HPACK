@@ -348,9 +348,15 @@ TEST(huffman_encode_eos) {
   };
   const uint8_t* in = bytes.data();
   hpack::decoded_string decoded;
-  hpack::decode_string(in, in + bytes.size(), decoded);
-  error_if(in != bytes.data() + bytes.size());
-  error_if(decoded.str() != "!");
+  try {
+    hpack::decode_string(in, in + bytes.size(), decoded);
+    error_if(true);
+  } catch (hpack::protocol_error& e) {
+    // must throw EOS readen
+    // decoded only size of string, but not string itself
+    error_if(in != bytes.data() + 1);
+    error_if(decoded.str() != "");
+  }
 }
 
 TEST(static_table_find) {

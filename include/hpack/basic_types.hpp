@@ -4,18 +4,22 @@
 #include <iterator>
 #include <string_view>
 
-#ifndef KELBON_HPACK_HANDLE_PROTOCOL_ERROR
-
 #include <exception>
 
 namespace hpack {
-struct protocol_error : std::exception {};
-}  // namespace hpack
 
-#define KELBON_HPACK_HANDLE_PROTOCOL_ERROR \
-  throw ::hpack::protocol_error {          \
+struct protocol_error : std::exception {
+  const char* msg = "";
+
+  explicit protocol_error(const char* m) : msg(m) {
   }
-#endif
+
+  const char* what() const noexcept override {
+    return msg;
+  }
+};
+
+}  // namespace hpack
 
 namespace hpack {
 
@@ -38,12 +42,7 @@ using In = const byte_t*;
 template <typename T>
 concept Out = std::output_iterator<T, byte_t>;
 
-[[noreturn]] inline void handle_protocol_error() {
-  KELBON_HPACK_HANDLE_PROTOCOL_ERROR;
-}
-[[noreturn]] inline void handle_size_error() {
-  KELBON_HPACK_HANDLE_PROTOCOL_ERROR;
-}
+#define HPACK_PROTOCOL_ERROR(...) ::hpack::protocol_error("hpack protocol error: " #__VA_ARGS__)
 
 namespace noexport {
 

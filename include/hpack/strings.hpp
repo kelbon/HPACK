@@ -16,7 +16,9 @@ O encode_string_huffman(std::string_view str, O _out) {
   for (char c : str)
     len_after_encode += huffman_table[uint8_t(c)].bit_count;
   *out = 0b1000'0000;  // set H bit
-  const int padlen = 8 - len_after_encode % 8;
+  // % 8 for guarantee, that padding ALWAYS < 7 bits. Its makes no sense to add entire byte or more padding
+  // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
+  const int padlen = (8 - len_after_encode % 8) % 8;
   out = encode_integer((len_after_encode + padlen) / 8, 7, out);
   auto push_bit = [&, bitn = 7](bool bit) mutable {
     if (bitn == 7)

@@ -64,16 +64,23 @@ static O decode_string_huffman(In in, size_type len, O out) {
       // EOS
       while (bit_nmb != 0)  // skip padding
         next_bit();
-      return out;
+      // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
+      // A Huffman-encoded string literal containing the EOS symbol MUST be treated as a decoding error.
+      throw HPACK_PROTOCOL_ERROR(Huffman encoded string literal containing the EOS symbol);
     }
     if (sym != uint16_t(-1)) {
       info = {};
       *out = byte_t(sym);
       ++out;
+    } else if (info.bit_count > 7) {
+      // symbol is not resolved and its > 7 bit,
+      // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
+      // A padding strictly longer than 7 bits MUST be treated as a decoding error.
+      throw HPACK_PROTOCOL_ERROR(padding strictly longer than 7 bits);
     }
     if (in == e) {
       if (std::countr_one(info.bits) != info.bit_count)
-        handle_protocol_error();  // incorrect padding
+        throw HPACK_PROTOCOL_ERROR(invalid padding);
       return out;
     }
   }
@@ -156,7 +163,7 @@ void decode_string(In& in, In e, decoded_string& out) {
   bool is_huffman = *in & 0b1000'0000;
   size_type str_len = decode_integer(in, e, 7);
   if (str_len > std::distance(in, e))
-    handle_size_error();
+    throw HPACK_PROTOCOL_ERROR(size of encoded string not equal to data length);
   if (is_huffman)
     out.set_huffman((const char*)in, str_len);
   else
@@ -180,12 +187,13 @@ void decoder::decode_header(In& in, In e, header_view& out) {
     return decode_header_never_indexing(in, e, dyntab, out);
   if ((*in & 0b1111'0000) == 0)
     return decode_header_without_indexing(in, e, dyntab, out);
-  handle_protocol_error();
+  throw HPACK_PROTOCOL_ERROR(invalid field representation);
 }
 
 int decoder::decode_response_status(In& in, In e) {
   if (in == e)
-    handle_protocol_error();  // empty headers block, while atleast ':status' required
+    // empty headers block, while atleast ':status' required
+    throw HPACK_PROTOCOL_ERROR(required ":status" pseudoheader not present);
   if (*in & 0b1000'0000) {
     // fast path, fully indexed
     auto in_before = in;
@@ -215,14 +223,14 @@ int decoder::decode_response_status(In& in, In e) {
     decode_header(in, e, header);
   } while (!header && in != e);
   if (!header)
-    handle_protocol_error();  // header block only with dynamic_table_size_update
+    throw HPACK_PROTOCOL_ERROR(header block only with dynamic_table_size_update);
   std::string_view code = header.value.str();
   if (header.name.str() != ":status" || code.size() != 3)
-    handle_protocol_error();
+    throw HPACK_PROTOCOL_ERROR(invalid first header, expected ":status" with 3 digit code);
   int status_code;
   auto [_, err] = std::from_chars(code.data(), code.data() + 3, status_code);
   if (err != std::errc{})
-    handle_protocol_error();
+    throw HPACK_PROTOCOL_ERROR(invalid ":status" value, not a number);
   return status_code;
 }
 
