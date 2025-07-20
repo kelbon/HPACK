@@ -107,7 +107,7 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
         data = old_data;
         allocated_sz_log2 = was_allocated;
       } else {
-        if (was_allocated > 0)
+        if (was_allocated != -1)
           free((void*)old_data);
       }
     }};
@@ -153,13 +153,16 @@ static void decode_header_never_indexing(In& in, In e, dynamic_table_t& dyntab, 
 }
 
 // returns requested new size of dynamic table
-static size_type decode_dynamic_table_size_update(In& in, In e) noexcept {
-  assert(*in & 0b0010'0000 && !(*in & 0b0100'0000) && !(*in & 0b1000'0000));
+static size_type decode_dynamic_table_size_update(In& in, In e) {
+  assert(*in & 0b0010'0000);  // marker of dynamic table size update
+  if (*in & 0b1100'0000)
+    throw HPACK_PROTOCOL_ERROR(invalid dynamic table size update);
   return decode_integer(in, e, 5);
 }
 
 void decode_string(In& in, In e, decoded_string& out) {
-  assert(in != e);
+  if (in == e)
+    throw HPACK_PROTOCOL_ERROR(incorrectly encoded string);
   bool is_huffman = *in & 0b1000'0000;
   size_type str_len = decode_integer(in, e, 7);
   if (str_len > std::distance(in, e))
