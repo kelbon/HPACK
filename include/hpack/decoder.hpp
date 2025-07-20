@@ -11,7 +11,9 @@ struct decoded_string {
  private:
   const char* data = nullptr;
   size_type sz = 0;
-  uint8_t allocated_sz_log2 = 0;  // != 0 after decoding huffman str
+  // != -1 after decoding huffman str
+  // default -1 for removing ambiguity between 'not allocated' and 'allocated 1 byte' (log2(1) == 0)
+  int8_t allocated_sz_log2 = -1;
 
   friend void decode_string(In&, In, decoded_string&);
 
@@ -65,15 +67,15 @@ struct decoded_string {
   }
 
   void reset() noexcept {
-    if (allocated_sz_log2)
+    if (allocated_sz_log2 != -1)
       free((void*)data);
     data = nullptr;
     sz = 0;
-    allocated_sz_log2 = 0;
+    allocated_sz_log2 = -1;
   }
 
   [[nodiscard]] size_t bytes_allocated() const noexcept {
-    if (!allocated_sz_log2)
+    if (allocated_sz_log2 == -1)
       return 0;
     return 1 << allocated_sz_log2;
   }

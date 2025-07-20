@@ -746,7 +746,46 @@ TEST(decode_headers_block_dyntab_update) {
   });
 }
 
+TEST(invalid_headers) {
+  hpack::byte_t data = 0b0100'0000;
+  hpack::decoder d;
+  hpack::header_view h;
+  hpack::byte_t const* in = &data;
+  try {
+    d.decode_header(in, in + 1, h);
+    error_if(true);
+  } catch (...) {
+  }
+}
+
+TEST(fuzzing) {
+  std::independent_bits_engine<std::mt19937, /*bits*/ 8, unsigned short> g(std::mt19937(43111));
+  std::mt19937 g2(42);
+  hpack::decoder d(4096);
+  hpack::header_view view;
+  size_t suc = 0;
+  size_t fail = 0;
+  for (int i = 0; i < 1'000'000; ++i) {
+    // decoder should not segfault / assert / break its state
+    bytes_t data;
+    size_t sz = 1 + g2() % 6;  // size < 6, but never 0 (precondition of decode_header)
+    for (size_t i = 0; i < sz; ++i) {
+      hpack::byte_t byte = static_cast<hpack::byte_t>(g());
+      data.push_back(byte);
+    }
+    try {
+      hpack::byte_t const* in = data.data();
+      d.decode_header(in, in + data.size(), view);
+      ++suc;
+    } catch (hpack::protocol_error const&) {
+      ++fail;
+    }
+  }
+}
+
 int main() {
+  test_fuzzing();
+  test_invalid_headers();
   test_decode_headers_block_dyntab_update();
   test_decoded_string();
   test_tg_answer();
