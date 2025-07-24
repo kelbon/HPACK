@@ -33,8 +33,10 @@ struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_lin
     assert(resource);
     void* bytes = resource->allocate(sizeof(entry_t) + name.size() + value.size(), alignof(entry_t));
     entry_t* e = new (bytes) entry_t(name.size(), value.size(), insert_c);
-    memcpy(+e->data, name.data(), name.size());
-    memcpy(e->data + name.size(), value.data(), value.size());
+    if (!name.empty())
+      memcpy(+e->data, name.data(), name.size());
+    if (!value.empty())
+      memcpy(e->data + name.size(), value.data(), value.size());
     return e;
   }
   static void destroy(const entry_t* e, std::pmr::memory_resource* resource) noexcept {

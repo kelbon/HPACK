@@ -93,7 +93,7 @@ static void test_decode(hpack::decoder& enc, hpack::size_type expected_dyntab_si
   error_if(enc.dyntab.current_size() != expected_dyntab_size);
   error_if(in - 1 != &bytes_to_decode.back());
   size_t i = hpack::static_table_t::first_unused_index;
-  size_t imax = i + expected_dyntab_content.size();
+
   for (auto&& [name, value] : expected_dyntab_content) {
     error_if(!enc.dyntab.find(name, value));
     ++i;
@@ -769,7 +769,7 @@ TEST(fuzzing) {
     // decoder should not segfault / assert / break its state
     bytes_t data;
     size_t sz = 1 + g2() % 6;  // size < 6, but never 0 (precondition of decode_header)
-    for (size_t i = 0; i < sz; ++i) {
+    for (size_t j = 0; j < sz; ++j) {
       hpack::byte_t byte = static_cast<hpack::byte_t>(g());
       data.push_back(byte);
     }

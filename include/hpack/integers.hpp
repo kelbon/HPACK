@@ -56,7 +56,7 @@ template <std::unsigned_integral UInt = size_type>
   auto pull = [&] {
     if (in == e)
       throw HPACK_PROTOCOL_ERROR(invalid integer representation);
-    int8_t i = *in;
+    auto i = *in;
     ++in;
     return i;
   };
