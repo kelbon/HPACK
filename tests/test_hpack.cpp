@@ -783,7 +783,241 @@ TEST(fuzzing) {
   }
 }
 
+TEST(search_dynamic) {
+  hpack::dynamic_table_t table(4096);
+  // from static table
+  auto sr = table.find("abc", "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry("abc", "511");
+
+  sr = table.find("abc", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  sr = table.find("abc", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  table.add_entry("abc", "511");  // same entry
+
+  sr = table.find("abc", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index == 0);
+
+  sr = table.find("abc", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+}
+
+void check_dyntab_moves(headers_t hdrs, size_t dyntabsz, headers_t expected_dyntab_content) {
+  hpack::dynamic_table_t table(dyntabsz);
+  error_if(table.current_size() != 0);
+  error_if(table.max_size() != dyntabsz);
+  error_if(table.user_protocol_max_size() != dyntabsz);
+  auto check_empty = [&](hpack::dynamic_table_t const& tbl) {
+    for (auto& [n, v] : hdrs) {
+      hpack::find_result_t x = tbl.find(n, v);
+      error_if(x.value_indexed || x.header_name_index != 0);
+    }
+  };
+  auto check_not_empty = [&](hpack::dynamic_table_t const& tbl) {
+    for (auto& [n, v] : expected_dyntab_content) {
+      hpack::find_result_t x = tbl.find(n, v);
+      error_if(!x.value_indexed || x.header_name_index == 0);
+    }
+  };
+
+  check_empty(table);
+
+  for (auto& [n, v] : hdrs) {
+    table.add_entry(n, v);
+  }
+
+  check_not_empty(table);
+
+  auto t = std::move(table);
+
+  check_empty(table);
+  check_not_empty(t);
+
+  table = std::move(t);
+
+  check_empty(t);
+  check_not_empty(table);
+
+  using std::swap;
+  swap(table, t);
+
+  check_empty(table);
+  check_not_empty(t);
+
+  swap(table, table);
+  swap(t, t);
+
+  check_empty(table);
+  check_not_empty(t);
+
+  t = std::move(t);
+  table = std::move(table);
+
+  check_empty(table);
+  check_not_empty(t);
+
+  t.set_user_protocol_max_size(dyntabsz + 2);
+  t.update_size(dyntabsz + 1);
+  table = std::move(t);
+
+  check_empty(t);
+  check_not_empty(table);
+
+  error_if(table.user_protocol_max_size() != dyntabsz + 2);
+  error_if(table.max_size() != dyntabsz + 1);
+}
+
+TEST(dyntable_move) {
+  check_dyntab_moves({}, 4096, {});
+  check_dyntab_moves({{":status", "200"}}, 4096, {{":status", "200"}});
+  check_dyntab_moves({{"ewweww", "rrrr"}, {":status", "200"}}, 4096,
+                     {{"ewweww", "rrrr"}, {":status", "200"}});
+  check_dyntab_moves({}, 0, {});
+  check_dyntab_moves({{":status", "200"}}, 0, {});
+  check_dyntab_moves({{"ewweww", "rrrr"}, {":status", "200"}}, 0, {});
+  check_dyntab_moves({}, 15, {});
+  check_dyntab_moves({{":status", "200"}}, 15, {});
+  check_dyntab_moves({{"ewweww", "rrrr"}, {":status", "200"}}, 15, {});
+  check_dyntab_moves({}, 33, {});
+  check_dyntab_moves({{":status", "200"}}, 33, {});
+  check_dyntab_moves({{"ewweww", "rrrr"}, {":status", "200"}}, 33, {});
+  check_dyntab_moves({}, 100, {});
+  check_dyntab_moves({{":status", "200"}}, 100, {{":status", "200"}});
+  check_dyntab_moves({{"ewweww", "rrrr"}, {":status", "200"}}, 100, {{"ewweww", "rrrr"}, {":status", "200"}});
+}
+
+TEST(search) {
+  hpack::dynamic_table_t table(4096);
+  // from static table
+  auto sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry(":status", "511");
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  table.add_entry(":status", "511");  // same entry
+
+  sr = table.find(":status", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index == 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  table.set_user_protocol_max_size(0);
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry(":status", "511");
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  table.add_entry(":status", "511");  // same entry
+
+  sr = table.find(":status", "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+}
+
+TEST(encode_status) {
+  hpack::encoder enc(4096);
+
+  bytes_t bytes;
+  auto out = std::back_inserter(bytes);
+
+  auto testone = [&](int status, int expected_len) {
+    enc.encode_status(status, out);
+    error_if(bytes.size() != expected_len);
+    bytes.clear();
+  };
+  // fully indexed (static table)
+  testone(200, 1);
+  testone(204, 1);
+  testone(206, 1);
+  testone(304, 1);
+  testone(400, 1);
+  testone(404, 1);
+  testone(500, 1);
+  error_if(enc.dyntab.current_size() != 0);
+  testone(101, 5);  // cache first time
+  error_if(enc.dyntab.current_size() == 0);
+  testone(101, 1);  // use cached value
+
+  auto r = enc.dyntab.find(":status", "101");
+  error_if(!r.value_indexed || r.header_name_index != hpack::static_table_t::first_unused_index);
+}
+
+TEST(encode_with_cache) {
+  hpack::encoder enc(4096);
+
+  bytes_t bytes;
+  auto out = std::back_inserter(bytes);
+
+  auto testone = [&](hpack::static_table_t::values name, std::string_view value, int expected_len) {
+    enc.encode_with_cache(name, value, out);
+    error_if(bytes.size() != expected_len);
+    bytes.clear();
+  };
+  error_if(enc.dyntab.current_size() != 0);
+
+  testone(hpack::static_table_t::status_204, "111", 5);
+
+  error_if(enc.dyntab.current_size() == 0);
+
+  testone(hpack::static_table_t::status_204, "111", 1);
+}
+
 int main() {
+  test_dyntable_move();
+  test_encode_status();
+  test_encode_with_cache();
+  test_search_dynamic();
+  test_search();
   test_fuzzing();
   test_invalid_headers();
   test_decode_headers_block_dyntab_update();

@@ -16,15 +16,18 @@ struct dynamic_table_t {
 
  private:
   struct key_of_entry {
-    using type = table_entry;
-    table_entry operator()(const entry_t& v) const noexcept;
+    using type = std::string_view;
+    std::string_view operator()(const entry_t&) const noexcept;
   };
-  // for forward declaring entry_t
-  using hook_type_option = bi::base_hook<bi::set_base_hook<bi::link_mode<bi::normal_link>>>;
 
   // invariant: do not contain nullptrs
   std::vector<entry_t*> entries;
-  bi::multiset<entry_t, bi::constant_time_size<false>, hook_type_option, bi::key_of_value<key_of_entry>> set;
+  using entry_set_hook = bi::set_base_hook<bi::link_mode<bi::normal_link>>;
+  // sorted by name
+  using entry_set_t = bi::multiset<entry_t, bi::constant_time_size<false>, bi::base_hook<entry_set_hook>,
+                                   bi::key_of_value<key_of_entry>>;
+
+  entry_set_t set;
   // in bytes
   // invariant: <= _max_size
   size_type _current_size = 0;
@@ -49,7 +52,9 @@ struct dynamic_table_t {
                          Insertion Point      Dropping Point
   */
  public:
-  dynamic_table_t() = default;
+  // 4096 - default size by protocol
+  dynamic_table_t() : dynamic_table_t(4096) {
+  }
   // `user_protocol_max_size` and `max_size()` both initialized to `max_size`
   explicit dynamic_table_t(size_type max_size,
                            std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept;
@@ -70,6 +75,12 @@ struct dynamic_table_t {
   void operator=(const dynamic_table_t&) = delete;
 
   dynamic_table_t& operator=(dynamic_table_t&& other) noexcept;
+
+  void swap(dynamic_table_t&) noexcept;
+
+  friend void swap(dynamic_table_t& a, dynamic_table_t& b) noexcept {
+    return a.swap(b);
+  }
 
   ~dynamic_table_t();
 
@@ -97,11 +108,15 @@ struct dynamic_table_t {
     return entries.size() + static_table_t::first_unused_index - 1;
   }
 
-  find_result_t find(std::string_view name, std::string_view value) noexcept;
-  find_result_t find(index_type name, std::string_view value) noexcept;
+  // searches both static and dynamic table
+  find_result_t find(std::string_view name, std::string_view value) const noexcept;
+  // searches both static and dynamic table
+  // precondition: name <= current_max_index()
+  find_result_t find(index_type name, std::string_view value) const noexcept;
 
-  // precondition: first_unused_index <= index <= current_max_index()
+  // precondition: 0 < index <= current_max_index()
   // Note: returned value may be invalidated on next .add_entry()
+  // searches both in static and dynamic tables
   table_entry get_entry(index_type index) const noexcept;
 
   void reset() noexcept;

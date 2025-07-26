@@ -4,11 +4,9 @@
 #include <utility>
 #include <cstring>  // memcpy
 
-namespace bi = boost::intrusive;
-
 namespace hpack {
 
-struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_link>> {
+struct dynamic_table_t::entry_t : entry_set_hook {
   const size_type name_end;
   const size_type value_end;
   const size_t _insert_c;
@@ -46,6 +44,10 @@ struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_lin
   }
 };
 
+std::string_view dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
+  return v.name();
+}
+
 // precondition: 'e' now in entries
 index_type dynamic_table_t::indexof(const dynamic_table_t::entry_t& e) const noexcept {
   return static_table_t::first_unused_index + (_insert_count - e._insert_c);
@@ -61,10 +63,6 @@ static size_type entry_size(const dynamic_table_t::entry_t& entry) noexcept {
   return entry.value_end + 32;
 }
 
-table_entry dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
-  return {v.name(), v.value()};
-}
-
 dynamic_table_t::dynamic_table_t(size_type max_size, std::pmr::memory_resource* m) noexcept
     : _current_size(0),
       _max_size(max_size),
@@ -73,25 +71,23 @@ dynamic_table_t::dynamic_table_t(size_type max_size, std::pmr::memory_resource* 
       _resource(m ? m : std::pmr::get_default_resource()) {
 }
 
-dynamic_table_t::dynamic_table_t(dynamic_table_t&& other) noexcept
-    : entries(std::move(other.entries)),
-      set(std::move(other.set)),
-      _current_size(std::exchange(other._current_size, 0)),
-      _max_size(std::exchange(other._max_size, 0)),
-      _insert_count(std::exchange(other._insert_count, 0)),
-      _resource(std::exchange(other._resource, std::pmr::get_default_resource())) {
+void dynamic_table_t::swap(dynamic_table_t& other) noexcept {
+  using std::swap;
+  swap(entries, other.entries);
+  swap(set, other.set);
+  swap(_current_size, other._current_size);
+  swap(_max_size, other._max_size);
+  swap(_user_protocol_max_size, other._user_protocol_max_size);
+  swap(_insert_count, other._insert_count);
+  swap(_resource, other._resource);
+}
+
+dynamic_table_t::dynamic_table_t(dynamic_table_t&& other) noexcept {
+  swap(other);
 }
 
 dynamic_table_t& dynamic_table_t::operator=(dynamic_table_t&& other) noexcept {
-  if (this == &other) [[unlikely]]
-    return *this;
-  reset();
-  entries = std::move(other.entries);
-  set = std::move(other.set);
-  _current_size = std::exchange(other._current_size, 0);
-  _max_size = std::exchange(other._max_size, 0);
-  _insert_count = std::exchange(other._insert_count, 0);
-  _resource = std::exchange(other._resource, std::pmr::get_default_resource());
+  swap(other);
   return *this;
 }
 
@@ -129,38 +125,26 @@ void dynamic_table_t::update_size(size_type new_max_size) {
   _max_size = new_max_size;
 }
 
-find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) noexcept {
+find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) const noexcept {
   find_result_t r;
-  auto it = set.find(table_entry{name, value});
-  if (it == set.end())
-    return r;
-  if (name == it->name()) {
-    r.header_name_index = indexof(*it);
-    if (value == it->value())
-      r.value_indexed = true;
+  auto [b, e] = set.equal_range(name);
+  for (; b != e; ++b) {
+    if (b->name() == name) {
+      r.header_name_index = indexof(*b);
+      if (b->value() == value) {
+        r.value_indexed = true;
+        return r;
+      }
+    }
   }
   return r;
 }
 
-find_result_t dynamic_table_t::find(index_type name, std::string_view value) noexcept {
+find_result_t dynamic_table_t::find(index_type name, std::string_view value) const noexcept {
   assert(name <= current_max_index());
-  find_result_t r;
-  if (name < static_table_t::first_unused_index || name > current_max_index() || name == 0)
-    return r;
-  table_entry e = get_entry(name);
-  if (e.value == value) {
-    r.header_name_index = name;
-    r.value_indexed = true;
-    return r;
-  }
-  auto it = set.find(table_entry{e.name, value});
-  assert(it != set.end());
-  if (e.name == it->name()) {
-    r.header_name_index = indexof(*it);
-    if (value == it->value())
-      r.value_indexed = true;
-  }
-  return r;
+  if (name == 0) [[unlikely]]
+    return {};
+  return find(get_entry(name).name, value);
 }
 
 void dynamic_table_t::reset() noexcept {
@@ -175,7 +159,7 @@ void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
   size_type i = 0;
   for (; _current_size > bytes; ++i) {
     _current_size -= entry_size(*entries[i]);
-    set.erase(set.s_iterator_to(*entries[i]));
+    set.erase(set.iterator_to(*entries[i]));
     entry_t::destroy(entries[i], _resource);
   }
   // evicts should be rare operation
@@ -183,7 +167,9 @@ void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
 }
 
 table_entry dynamic_table_t::get_entry(index_type index) const noexcept {
-  assert(index >= static_table_t::first_unused_index && index <= current_max_index());
+  assert(index != 0 && index <= current_max_index());
+  if (index < static_table_t::first_unused_index)
+    return static_table_t::get_entry(index);
   auto& e = *(&entries.back() - (index - static_table_t::first_unused_index));
   return table_entry{e->name(), e->value()};
 }
