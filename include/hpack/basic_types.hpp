@@ -27,7 +27,7 @@ struct sym_info_t {
   uint32_t bits;
   uint8_t bit_count;
 };
-extern const sym_info_t huffman_table[257];
+sym_info_t huffman_table_get(uint8_t index) noexcept;
 
 // uint16_t(-1) if not found
 uint16_t huffman_decode_table_find(sym_info_t info);

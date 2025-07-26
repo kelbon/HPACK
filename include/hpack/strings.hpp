@@ -14,7 +14,7 @@ O encode_string_huffman(std::string_view str, O _out) {
   // (size should be before string and len in bits depends on 'len' value)
   size_type len_after_encode = 0;
   for (char c : str)
-    len_after_encode += huffman_table[uint8_t(c)].bit_count;
+    len_after_encode += huffman_table_get(uint8_t(c)).bit_count;
   *out = 0b1000'0000;  // set H bit
   // % 8 for guarantee, that padding ALWAYS < 7 bits. Its makes no sense to add entire byte or more padding
   // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
@@ -33,7 +33,7 @@ O encode_string_huffman(std::string_view str, O _out) {
     }
   };
   for (char c : str) {
-    sym_info_t bits = huffman_table[uint8_t(c)];
+    sym_info_t bits = huffman_table_get(uint8_t(c));
     for (int i = 0; i < bits.bit_count; ++i)
       push_bit(bits.bits & (1 << i));
   }
