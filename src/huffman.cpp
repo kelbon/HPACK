@@ -23,6 +23,10 @@ constexpr sym_info_t huffman_table[257] = {
 #include "hpack/huffman_table.def"
 };
 
+sym_info_t huffman_table_get(uint8_t i) noexcept {
+  return huffman_table[i];
+}
+
 uint16_t huffman_decode_table_find(sym_info_t info) {
 #define HUFFMAN_TABLE(index, bits, bitcount) \
   case bits:                                 \

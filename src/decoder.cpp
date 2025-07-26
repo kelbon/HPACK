@@ -28,9 +28,6 @@ namespace hpack {
   return size_t(huffman_str_len) * 8 / 5;
 }
 
-// uint16_t(-1) if not found
-uint16_t huffman_decode_table_find(sym_info_t info);
-
 // precondition: in != e
 // note: 'len' must be decoded before calling this function
 template <Out O>
