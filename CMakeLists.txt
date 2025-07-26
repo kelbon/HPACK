@@ -5,6 +5,16 @@ project(HPACK LANGUAGES CXX)
 
 option(HPACK_ENABLE_TESTING "enables testing" OFF)
 option(HPACK_USE_CPM "turn off to not download boost" ON)
+option(HPACK_ENABLE_SANITIZERS "enables tests with sanitizers. Ignored if HPACK_ENABLE_TESTING == 0" OFF)
+
+if (HPACK_ENABLE_SANITIZERS)
+  # enable sanitize flags globally, all targets require to be compiled with them
+
+  # fno omit frame pointer to improve trace from sanitizers
+  add_compile_options(-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address -fsanitize=undefined)
+
+endif()
 
 ### dependecies ###
 

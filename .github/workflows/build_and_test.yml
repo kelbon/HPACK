@@ -22,16 +22,30 @@ jobs:
           sudo ln -sf /usr/local/bin/ld /usr/bin/lld
       - name: Configure CMake
         run: |
-          cmake . -DHPACK_ENABLE_TESTING=ON              \
-            -DCMAKE_BUILD_TYPE=${{matrix.build_type}} \
-            -DCMAKE_CXX_COMPILER=${{matrix.compiler}} \
-            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}}   \
+          cmake . -DHPACK_ENABLE_TESTING=ON               \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=${{matrix.compiler}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
             -B build -G "Ninja"
       - name: Build
         run:
           cmake --build build
-
       - name: Test
         run: |
           cd build
-          ctest --output-on-failure -C ${{matrix.build_type}} -V
+          ctest --output-on-failure -C ${{matrix.build_type}}
+      - name: Configure CMake sanitizers
+        run: |
+          cmake . -DHPACK_ENABLE_TESTING=ON               \
+            -DCMAKE_BUILD_TYPE=${{matrix.build_type}}     \
+            -DCMAKE_CXX_COMPILER=${{matrix.compiler}}     \
+            -DCMAKE_CXX_STANDARD=${{matrix.cpp_standard}} \
+            -DHPACK_ENABLE_SANITIZERS=ON                  \
+            -B build_sanitizers -G "Ninja"
+      - name: Build
+        run:
+          cmake --build build_sanitizers
+      - name: Test sanitizers
+        run: |
+          cd build_sanitizers
+          ctest --output-on-failure -C ${{matrix.build_type}}
