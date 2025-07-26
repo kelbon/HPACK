@@ -4,6 +4,8 @@
 #include "hpack/strings.hpp"
 #include "hpack/integers.hpp"
 
+#include <charconv>
+
 namespace hpack {
 
 struct encoder {
@@ -37,6 +39,11 @@ struct encoder {
 
   // only name indexed
   // precondition: header_index present in static or dynamic table
+  //
+  // Note: will encode to the cached header, but calling this function again will not result in more efficient
+  // encoding.
+  // Instead, it will send requests to cache the header and this will result in evicting from dynamic table.
+  // Its likely you want to use encode_with_cache instead
   template <bool Huffman = false, Out O>
   O encode_header_and_cache(index_type header_index, std::string_view value, O _out) {
     assert(header_index <= dyntab.current_max_index() && header_index != 0);
@@ -51,6 +58,11 @@ struct encoder {
 
   // indexes value for future use
   // 'out_index' contains index of 'name' + 'value' pair after encode
+  //
+  // Note: will encode to the cached header, but calling this function again will not result in more efficient
+  // encoding.
+  // Instead, it will send requests to cache the header and this will result in evicting from dynamic table.
+  // Its likely you want to use encode_with_cache instead
   template <bool Huffman = false, Out O>
   O encode_header_and_cache(std::string_view name, std::string_view value, O _out) {
     /*
@@ -74,6 +86,34 @@ struct encoder {
     out = encode_string<Huffman>(name, out);
     dyntab.add_entry(name, value);
     return noexport::unadapt<O>(encode_string<Huffman>(value, out));
+  }
+
+  // encodes header like 'encode_header_and_cache', but uses created cache, so next calls much more efficient
+  // than first call
+  //
+  // Note: does not use static_table. In this case its better to use `encode_header_fully_indexed`
+  template <bool Huffman = false, Out O>
+  O encode_with_cache(std::string_view name, std::string_view value, O out) {
+    find_result_t r = dyntab.find(name, value);
+    if (r.value_indexed) [[likely]] {
+      // its likely, because only first call will be not cached
+      return encode_header_fully_indexed(r.header_name_index, out);
+    }
+    return encode_header_and_cache<Huffman>(name, value, out);
+  }
+
+  // encodes header like 'encode_header_and_cache', but uses created cache, so next calls much more efficient
+  // than first call
+  //
+  // Note: does not use static_table. In this case its better to use `encode_header_fully_indexed`
+  template <bool Huffman = false, Out O>
+  O encode_with_cache(index_type name, std::string_view value, O out) {
+    find_result_t r = dyntab.find(name, value);
+    if (r.value_indexed) [[likely]] {
+      // its likely, because only first call will be not cached
+      return encode_header_fully_indexed(r.header_name_index, out);
+    }
+    return encode_header_and_cache<Huffman>(name, value, out);
   }
 
   template <bool Huffman = false, Out O>
@@ -250,6 +290,35 @@ struct encoder {
     auto it = noexport::unadapt<O>(encode_integer(new_size, 5, out));
     dyntab.update_size(new_size);
     return it;
+  }
+
+  // encodes :status pseudoheader for server
+  // precondition:
+  template <Out O>
+  O encode_status(int status, O out) {
+    using enum static_table_t::values;
+    switch (status) {
+      case 200:
+        return encode_header_fully_indexed(status_200, out);
+      case 204:
+        return encode_header_fully_indexed(status_204, out);
+      case 206:
+        return encode_header_fully_indexed(status_206, out);
+      case 304:
+        return encode_header_fully_indexed(status_304, out);
+      case 400:
+        return encode_header_fully_indexed(status_400, out);
+      case 404:
+        return encode_header_fully_indexed(status_404, out);
+      case 500:
+        return encode_header_fully_indexed(status_500, out);
+      default:
+        char data[32];
+        auto [ptr, ec] = std::to_chars(data, data + 32, status);
+        assert(ec == std::errc{});
+        // its likely, that server will send this status again, so cache it
+        return encode_with_cache(status_200, std::string_view(+data, ptr), out);
+    }
   }
 };
 
