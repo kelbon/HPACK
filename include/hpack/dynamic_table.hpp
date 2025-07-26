@@ -2,7 +2,7 @@
 
 #include <memory_resource>
 
-#include <boost/intrusive/set.hpp>
+#include <boost/intrusive/unordered_set.hpp>
 
 #include "hpack/basic_types.hpp"
 #include "hpack/static_table.hpp"
@@ -16,15 +16,33 @@ struct dynamic_table_t {
 
  private:
   struct key_of_entry {
-    using type = table_entry;
-    table_entry operator()(const entry_t& v) const noexcept;
+    using type = std::string_view;
+    std::string_view operator()(const entry_t& v) const noexcept;
   };
-  // for forward declaring entry_t
-  using hook_type_option = bi::base_hook<bi::set_base_hook<bi::link_mode<bi::normal_link>>>;
+  struct equal_by_namevalue {
+    bool operator()(const key_of_entry::type& l, const key_of_entry::type& r) const noexcept {
+      return l == r;
+    }
+  };
+  struct hash_by_namevalue {
+    size_t operator()(key_of_entry::type) const noexcept;
+  };
 
   // invariant: do not contain nullptrs
   std::vector<entry_t*> entries;
-  bi::multiset<entry_t, bi::constant_time_size<false>, hook_type_option, bi::key_of_value<key_of_entry>> set;
+  using entry_set_hook = bi::unordered_set_base_hook<bi::link_mode<bi::normal_link>, bi::store_hash<true>,
+                                                     bi::optimize_multikey<true>>;
+  // hashed by name
+  using entry_set_t = bi::unordered_multiset<entry_t, bi::base_hook<entry_set_hook>,
+                                             bi::key_of_value<key_of_entry>, bi::equal<equal_by_namevalue>,
+                                             bi::hash<hash_by_namevalue>, bi::power_2_buckets<true>>;
+
+  static constexpr inline size_t initial_buckets_count = 4;
+
+  // Note: must be before `set` because of destroy ordering
+  // invariant: .size is always pow of 2
+  std::vector<entry_set_t::bucket_type> buckets;
+  entry_set_t set;
   // in bytes
   // invariant: <= _max_size
   size_type _current_size = 0;
@@ -49,7 +67,9 @@ struct dynamic_table_t {
                          Insertion Point      Dropping Point
   */
  public:
-  dynamic_table_t() = default;
+  // 4096 - default size by protocol
+  dynamic_table_t() : dynamic_table_t(4096) {
+  }
   // `user_protocol_max_size` and `max_size()` both initialized to `max_size`
   explicit dynamic_table_t(size_type max_size,
                            std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept;
@@ -97,11 +117,15 @@ struct dynamic_table_t {
     return entries.size() + static_table_t::first_unused_index - 1;
   }
 
+  // searches both static and dynamic table
   find_result_t find(std::string_view name, std::string_view value) noexcept;
+  // searches both static and dynamic table
+  // precondition: name <= current_max_index()
   find_result_t find(index_type name, std::string_view value) noexcept;
 
-  // precondition: first_unused_index <= index <= current_max_index()
+  // precondition: 0 < index <= current_max_index()
   // Note: returned value may be invalidated on next .add_entry()
+  // searches both in static and dynamic tables
   table_entry get_entry(index_type index) const noexcept;
 
   void reset() noexcept;

@@ -783,7 +783,156 @@ TEST(fuzzing) {
   }
 }
 
+TEST(search_dynamic) {
+  hpack::dynamic_table_t table(4096);
+  // from static table
+  auto sr = table.find("abc", "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry("abc", "511");
+
+  sr = table.find("abc", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  sr = table.find("abc", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  table.add_entry("abc", "511");  // same entry
+
+  sr = table.find("abc", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index == 0);
+
+  sr = table.find("abc", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index + 1);
+}
+
+TEST(search) {
+  hpack::dynamic_table_t table(4096);
+  // from static table
+  auto sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry(":status", "511");
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index);
+
+  table.add_entry(":status", "511");  // same entry
+
+  sr = table.find(":status", "511");
+
+  error_if(!sr.value_indexed);
+  error_if(sr.header_name_index == 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != hpack::static_table_t::first_unused_index + 1);
+
+  table.set_user_protocol_max_size(0);
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);  // not found
+
+  table.add_entry(":status", "511");
+
+  sr = table.find(hpack::static_table_t::status_200, "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  table.add_entry(":status", "511");  // same entry
+
+  sr = table.find(":status", "511");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+
+  sr = table.find(":status", "123");
+
+  error_if(sr.value_indexed);
+  error_if(sr.header_name_index != 0);
+}
+
+TEST(encode_status) {
+  hpack::encoder enc(4096);
+
+  bytes_t bytes;
+  auto out = std::back_inserter(bytes);
+
+  auto testone = [&](int status, int expected_len) {
+    enc.encode_status(status, out);
+    error_if(bytes.size() != expected_len);
+    bytes.clear();
+  };
+  // fully indexed (static table)
+  testone(200, 1);
+  testone(204, 1);
+  testone(206, 1);
+  testone(304, 1);
+  testone(400, 1);
+  testone(404, 1);
+  testone(500, 1);
+  error_if(enc.dyntab.current_size() != 0);
+  testone(101, 5);  // cache first time
+  error_if(enc.dyntab.current_size() == 0);
+  testone(101, 1);  // use cached value
+
+  auto r = enc.dyntab.find(":status", "101");
+  error_if(!r.value_indexed || r.header_name_index != hpack::static_table_t::first_unused_index);
+}
+
+TEST(encode_with_cache) {
+  hpack::encoder enc(4096);
+
+  bytes_t bytes;
+  auto out = std::back_inserter(bytes);
+
+  auto testone = [&](hpack::static_table_t::values name, std::string_view value, int expected_len) {
+    enc.encode_with_cache(name, value, out);
+    error_if(bytes.size() != expected_len);
+    bytes.clear();
+  };
+  error_if(enc.dyntab.current_size() != 0);
+
+  testone(hpack::static_table_t::status_204, "111", 5);
+
+  error_if(enc.dyntab.current_size() == 0);
+
+  testone(hpack::static_table_t::status_204, "111", 1);
+}
+
 int main() {
+  test_encode_status();
+  test_encode_with_cache();
+  test_search_dynamic();
+  test_search();
   test_fuzzing();
   test_invalid_headers();
   test_decode_headers_block_dyntab_update();

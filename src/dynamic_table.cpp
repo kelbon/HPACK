@@ -4,11 +4,9 @@
 #include <utility>
 #include <cstring>  // memcpy
 
-namespace bi = boost::intrusive;
-
 namespace hpack {
 
-struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_link>> {
+struct dynamic_table_t::entry_t : entry_set_hook {
   const size_type name_end;
   const size_type value_end;
   const size_t _insert_c;
@@ -46,6 +44,27 @@ struct dynamic_table_t::entry_t : bi::set_base_hook<bi::link_mode<bi::normal_lin
   }
 };
 
+std::string_view dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
+  return v.name();
+}
+
+static size_t hash_calc(std::string_view bytes) noexcept {
+  // standard hash is bad sometimes
+  constexpr uint64_t fnv_offset_basis = 14695981039346656037ULL;
+  constexpr uint64_t fnv_prime = 1099511628211ULL;
+  size_t hash = fnv_offset_basis;
+  for (auto byte : bytes) {
+    hash ^= static_cast<uint64_t>(byte);
+    hash *= fnv_prime;
+  }
+  return hash;
+}
+
+size_t dynamic_table_t::hash_by_namevalue::operator()(
+    dynamic_table_t::key_of_entry::type str) const noexcept {
+  return hash_calc(str);
+}
+
 // precondition: 'e' now in entries
 index_type dynamic_table_t::indexof(const dynamic_table_t::entry_t& e) const noexcept {
   return static_table_t::first_unused_index + (_insert_count - e._insert_c);
@@ -61,12 +80,10 @@ static size_type entry_size(const dynamic_table_t::entry_t& entry) noexcept {
   return entry.value_end + 32;
 }
 
-table_entry dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
-  return {v.name(), v.value()};
-}
-
 dynamic_table_t::dynamic_table_t(size_type max_size, std::pmr::memory_resource* m) noexcept
-    : _current_size(0),
+    : buckets(initial_buckets_count),
+      set({buckets.data(), buckets.size()}),
+      _current_size(0),
       _max_size(max_size),
       _user_protocol_max_size(max_size),
       _insert_count(0),
@@ -109,6 +126,14 @@ index_type dynamic_table_t::add_entry(std::string_view name, std::string_view va
   evict_until_fits_into(_max_size - new_entry_size);
   entries.push_back(entry_t::create(name, value, ++_insert_count, _resource));
   set.insert(*entries.back());
+  if (entries.size() > buckets.size() / 2) {
+    // https://github.com/boostorg/intrusive/issues/96
+    // workaround:
+    // unordered set bucket copy(move) ctor does nothing, so .resize will be UB
+    decltype(buckets) new_buckets(buckets.size() * 2);
+    set.rehash({new_buckets.data(), new_buckets.size()});
+    buckets = std::move(new_buckets);
+  }
   _current_size += new_entry_size;
   return static_table_t::first_unused_index;
 }
@@ -131,36 +156,26 @@ void dynamic_table_t::update_size(size_type new_max_size) {
 
 find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) noexcept {
   find_result_t r;
-  auto it = set.find(table_entry{name, value});
-  if (it == set.end())
-    return r;
-  if (name == it->name()) {
-    r.header_name_index = indexof(*it);
-    if (value == it->value())
-      r.value_indexed = true;
+  auto i = set.bucket(name);
+  auto b = set.begin(i);
+  auto e = set.end(i);
+  for (; b != e; ++b) {
+    if (b->name() == name) {
+      r.header_name_index = indexof(*b);
+      if (b->value() == value) {
+        r.value_indexed = true;
+        return r;
+      }
+    }
   }
   return r;
 }
 
 find_result_t dynamic_table_t::find(index_type name, std::string_view value) noexcept {
   assert(name <= current_max_index());
-  find_result_t r;
-  if (name < static_table_t::first_unused_index || name > current_max_index() || name == 0)
-    return r;
-  table_entry e = get_entry(name);
-  if (e.value == value) {
-    r.header_name_index = name;
-    r.value_indexed = true;
-    return r;
-  }
-  auto it = set.find(table_entry{e.name, value});
-  assert(it != set.end());
-  if (e.name == it->name()) {
-    r.header_name_index = indexof(*it);
-    if (value == it->value())
-      r.value_indexed = true;
-  }
-  return r;
+  if (name == 0) [[unlikely]]
+    return {};
+  return find(get_entry(name).name, value);
 }
 
 void dynamic_table_t::reset() noexcept {
@@ -175,7 +190,7 @@ void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
   size_type i = 0;
   for (; _current_size > bytes; ++i) {
     _current_size -= entry_size(*entries[i]);
-    set.erase(set.s_iterator_to(*entries[i]));
+    set.erase(set.iterator_to(*entries[i]));
     entry_t::destroy(entries[i], _resource);
   }
   // evicts should be rare operation
@@ -183,7 +198,9 @@ void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
 }
 
 table_entry dynamic_table_t::get_entry(index_type index) const noexcept {
-  assert(index >= static_table_t::first_unused_index && index <= current_max_index());
+  assert(index != 0 && index <= current_max_index());
+  if (index < static_table_t::first_unused_index)
+    return static_table_t::get_entry(index);
   auto& e = *(&entries.back() - (index - static_table_t::first_unused_index));
   return table_entry{e->name(), e->value()};
 }
