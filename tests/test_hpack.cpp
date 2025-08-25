@@ -1033,18 +1033,13 @@ TEST(wtf) {
   enc.encode_header_and_cache("name", "value", out3);
 
   if (!dynTableEnabled) {
-    // Dynamic table update notification is mandatory if dynamic table disabled
     enc.encode_dynamic_table_size_update(0, out3);
   }
 
   hpack::decode_headers_block(dec, headers, [](std::string_view n, std::string_view value) {
     std::cout << n << " " << value << std::endl;
   });
-
-  // co_await require_nothrow(fake.sendRawHdr(1, headers));
-
-  // auto rcvrsp = co_await fake.pollHdrData(LARGE_REQUEST_TIMEOUT);
-  bool b = bool(enc.dyntab.find("name", "value")) == dynTableEnabled;
+  error_if(bool(enc.dyntab.find("name", "value")) != dynTableEnabled);
 
   auto headers2 = requestCommonFields;
   headers = requestCommonFields;
@@ -1059,8 +1054,9 @@ TEST(wtf) {
   } catch (std::exception& e) {
     std::cout << e.what();
     error_if(dynTableEnabled);
+    return;
   }
-  int _ = 0;
+  error_if(!dynTableEnabled);
 }
 
 int main() {
