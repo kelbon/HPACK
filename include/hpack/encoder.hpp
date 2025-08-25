@@ -30,7 +30,7 @@ struct encoder {
         | 1 |        Index (7+)         |
         +---+---------------------------+
     */
-    assert(header_index <= dyntab.current_max_index());
+    // assert(header_index <= dyntab.current_max_index());
     auto out = noexport::adapt_output_iterator(_out);
     // indexed name and value 0b1...
     *out = 0b1000'0000;

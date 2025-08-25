@@ -1012,7 +1012,59 @@ TEST(encode_with_cache) {
   testone(hpack::static_table_t::status_204, "111", 1);
 }
 
+bool dynTableEnabled = false;
+
+#include <iostream>
+
+TEST(wtf) {
+  using enum hpack::static_table_t::values;
+  hpack::encoder enc;
+  hpack::decoder dec;
+
+  std::vector<uint8_t> requestCommonFields;
+  auto out = std::back_inserter(requestCommonFields);
+  enc.encode_header_fully_indexed(scheme_http, out);
+  enc.encode_header_fully_indexed(method_get, out);
+  enc.encode_header_and_cache(authority, "[::1]:9100", out);
+  enc.encode_header_and_cache(path, "/README.md", out);
+
+  bytes_t headers = requestCommonFields;
+  auto out3 = std::back_inserter(headers);
+  enc.encode_header_and_cache("name", "value", out3);
+
+  if (!dynTableEnabled) {
+    // Dynamic table update notification is mandatory if dynamic table disabled
+    enc.encode_dynamic_table_size_update(0, out3);
+  }
+
+  hpack::decode_headers_block(dec, headers, [](std::string_view n, std::string_view value) {
+    std::cout << n << " " << value << std::endl;
+  });
+
+  // co_await require_nothrow(fake.sendRawHdr(1, headers));
+
+  // auto rcvrsp = co_await fake.pollHdrData(LARGE_REQUEST_TIMEOUT);
+  bool b = bool(enc.dyntab.find("name", "value")) == dynTableEnabled;
+
+  auto headers2 = requestCommonFields;
+  headers = requestCommonFields;
+  auto out2 = std::back_inserter(headers2);
+  enc.encode_header_fully_indexed(62, out2);
+  error_if(headers2.size() != requestCommonFields.size() + 1);
+
+  try {
+    hpack::decode_headers_block(dec, headers2, [](std::string_view n, std::string_view value) {
+      std::cout << n << " " << value << std::endl;
+    });
+  } catch (std::exception& e) {
+    std::cout << e.what();
+    error_if(dynTableEnabled);
+  }
+  int _ = 0;
+}
+
 int main() {
+  test_wtf();
   test_dyntable_move();
   test_encode_status();
   test_encode_with_cache();
