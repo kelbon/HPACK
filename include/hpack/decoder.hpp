@@ -3,10 +3,16 @@
 #include "hpack/basic_types.hpp"
 #include "hpack/dynamic_table.hpp"
 
+#include <span>
 #include <utility>
 
 namespace hpack {
 
+// helper for `decode_string`. Temporal storage for decoded strings
+//
+// may store string_view (AND NOT OWN IT!), may store huffman decoded string
+// and in this case memory will be allocated and owned
+// tries to reuse memory when new huffman string setted and memory already allocated
 struct decoded_string {
  private:
   const char* data = nullptr;
@@ -14,10 +20,6 @@ struct decoded_string {
   // != -1 after decoding huffman str
   // default -1 for removing ambiguity between 'not allocated' and 'allocated 1 byte' (log2(1) == 0)
   int8_t allocated_sz_log2 = -1;
-
-  friend void decode_string(In&, In, decoded_string&);
-
-  void set_huffman(const char* ptr, size_type len);
 
  public:
   decoded_string() = default;
@@ -43,12 +45,18 @@ struct decoded_string {
     return *this;
   }
 
+  void set_huffman(const char* ptr, size_type len);
+  // Note: *this will not own `ptr` memory, only contain a view
+  void set_not_huffman(const char* ptr, size_type len) {
+    reset();
+    data = ptr;
+    sz = len;
+  }
+
   // not huffman encoded string
   decoded_string& operator=(std::string_view str) noexcept {
     assert(std::in_range<size_type>(str.size()));
-    reset();
-    data = str.data();
-    sz = str.size();
+    set_not_huffman(str.data(), str.size());
     return *this;
   }
 
@@ -123,7 +131,6 @@ struct header_view {
   }
 };
 
-// precondition: in != e
 void decode_string(In& in, In e, decoded_string& out);
 
 struct decoder {
@@ -137,17 +144,82 @@ struct decoder {
 
   decoder(decoder&&) = default;
   decoder& operator=(decoder&&) noexcept = default;
+
   /*
    Note: this function ignores special 'cookie' header case
    https://www.rfc-editor.org/rfc/rfc7540#section-8.1.2.5
    and protocol error if decoded header name is not lowercase
   */
-  // precondition: in != e
   void decode_header(In& in, In e, header_view& out);
 
   // returns status code
   // its always first header of response, so 'in' must point to first byte of headers block
   int decode_response_status(In& in, In e);
+};
+
+// eats parts of headers fragment, allowing to parse CONTINUATIONS in HTTP/2 part by part
+struct stream_decoder {
+ private:
+  decoder& dec;
+  std::vector<byte_t> incomplete;
+
+  // returns where first unparsed byte starts
+  template <typename V>
+  In do_feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
+    In in = chunk.data();
+    In e = in + chunk.size();
+    assert(in != e);
+    In in_just_before_fail;
+    try {
+      header_view header;
+      while (in != e) {
+        in_just_before_fail = in;
+
+        dec.decode_header(in, e, header);
+
+        if (header) [[likely]]  // dynamic size update decoded without error
+          visitor(header.name.str(), header.value.str());
+      }
+      // successfully parsed all headers
+      return e;
+    } catch (hpack::incomplete_data_error&) {
+      if (last_chunk)
+        throw;
+    }
+    return in_just_before_fail;
+  }
+
+ public:
+  stream_decoder(decoder& d) noexcept : dec(d) {
+  }
+
+  stream_decoder(stream_decoder&&) = delete;
+  void operator=(stream_decoder&&) = delete;
+
+  // `visitor` should accept two string_views, name and value
+  // optimized for case when each `chunk` >> 1 header
+  template <typename V>
+  void feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
+    if (chunk.empty()) [[unlikely]]
+      return;
+    if (!incomplete.empty()) {
+      incomplete.insert(incomplete.end(), chunk.begin(), chunk.end());
+      In i = do_feed(incomplete, last_chunk, std::forward<V>(visitor));
+      In e = incomplete.data() + incomplete.size();
+      auto sz = e - i;
+      // avoid UB on .assign (iterators into vector itself)
+      memmove(incomplete.data(), i, sz);
+      incomplete.resize(sz);
+    } else {
+      In i = do_feed(chunk, last_chunk, std::forward<V>(visitor));
+      incomplete.assign(i, In(chunk.data()) + chunk.size());
+    }
+  }
+
+  // makes possible start from beginning, forgetting previous `feed` calls
+  void clear() noexcept {
+    incomplete.clear();
+  }
 };
 
 }  // namespace hpack

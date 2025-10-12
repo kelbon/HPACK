@@ -25,12 +25,11 @@ include(cmake/get_cpm.cmake)
 set(BOOST_INCLUDE_LIBRARIES intrusive)
 CPMAddPackage(
   NAME Boost
-  VERSION 1.84.0
+  VERSION 1.87.0
   URL https://github.com/boostorg/boost/releases/download/boost-1.84.0/boost-1.84.0.tar.xz
   OPTIONS "BOOST_ENABLE_CMAKE ON"
 )
 unset(BOOST_INCLUDE_LIBRARIES)
-find_package(Boost 1.84 COMPONENTS intrusive REQUIRED)
 
 endif()
 

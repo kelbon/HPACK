@@ -29,7 +29,7 @@ V decode_headers_block(decoder& dec, std::span<const byte_t> bytes, V visitor) {
   header_view header;
   while (in != e) {
     dec.decode_header(in, e, header);
-    if (header)  // dynamic size update decoded without error
+    if (header) [[likely]]  // dynamic size update decoded without error
       visitor(header.name.str(), header.value.str());
   }
   return visitor;

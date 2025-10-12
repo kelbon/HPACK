@@ -19,9 +19,11 @@ struct protocol_error : std::exception {
   }
 };
 
-}  // namespace hpack
-
-namespace hpack {
+// thrown if there are not enough data for reading header
+struct incomplete_data_error : hpack::protocol_error {
+  incomplete_data_error() : hpack::protocol_error("incomplete data") {
+  }
+};
 
 struct sym_info_t {
   uint32_t bits;
