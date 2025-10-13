@@ -165,11 +165,12 @@ struct stream_decoder {
 
   // returns where first unparsed byte starts
   template <typename V>
-  In do_feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
+  In do_feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor, size_t& approx) {
     In in = chunk.data();
     In e = in + chunk.size();
     assert(in != e);
     In in_just_before_fail;
+    approx = 0;
     try {
       header_view header;
       while (in != e) {
@@ -182,11 +183,12 @@ struct stream_decoder {
       }
       // successfully parsed all headers
       return e;
-    } catch (hpack::incomplete_data_error&) {
+    } catch (hpack::incomplete_data_error& e) {
+      approx = e.required_bytes;
       if (last_chunk)
         throw;
+      return in_just_before_fail;
     }
-    return in_just_before_fail;
   }
 
  public:
@@ -198,22 +200,34 @@ struct stream_decoder {
 
   // `visitor` should accept two string_views, name and value
   // optimized for case when each `chunk` >> 1 header
+  // returns approx count of bytes required for receiving next part of header
+  // or 0 if there are no unhandled data in chunk
+  // e.g. may be used to detect too big string before receiving it
   template <typename V>
-  void feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
+  size_t feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
     if (chunk.empty()) [[unlikely]]
-      return;
+      return 0;
+    size_t approx;
     if (!incomplete.empty()) {
       incomplete.insert(incomplete.end(), chunk.begin(), chunk.end());
-      In i = do_feed(incomplete, last_chunk, std::forward<V>(visitor));
+      In i = do_feed(incomplete, last_chunk, std::forward<V>(visitor), approx);
       In e = incomplete.data() + incomplete.size();
       auto sz = e - i;
       // avoid UB on .assign (iterators into vector itself)
       memmove(incomplete.data(), i, sz);
       incomplete.resize(sz);
     } else {
-      In i = do_feed(chunk, last_chunk, std::forward<V>(visitor));
+      In i = do_feed(chunk, last_chunk, std::forward<V>(visitor), approx);
       incomplete.assign(i, In(chunk.data()) + chunk.size());
     }
+    return approx;
+  }
+
+  // returns such value, that `pending_data_size` + `feed` result == almost exact value of bytes which will be
+  // stored until next part of header (not header itself!) will be parsed.
+  // Note, there are only 2 parts of header - name and value
+  [[nodiscard]] size_t pending_data_size() const noexcept {
+    return incomplete.size();
   }
 
   // makes possible start from beginning, forgetting previous `feed` calls

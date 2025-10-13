@@ -56,7 +56,7 @@ template <std::unsigned_integral UInt = size_type>
   const UInt prefix_mask = (1 << N) - 1;
   auto pull = [&] {
     if (in == e)
-      throw incomplete_data_error();
+      throw incomplete_data_error(2);
     auto i = *in;
     ++in;
     return i;

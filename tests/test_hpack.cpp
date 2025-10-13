@@ -568,6 +568,23 @@ TEST(stream_decoder) {
   }
 }
 
+TEST(stream_decoder_big_str) {
+  std::string name = "abchdr";
+  std::string value(15000, 'A');
+  hpack::encoder e;
+  bytes_t bytes;
+  e.encode_header_never_indexing(name, value, std::back_inserter(bytes));
+  hpack::decoder d;
+  hpack::stream_decoder sd(d);
+  error_if(bytes.size() < value.size());
+  auto vtor = [](std::string_view, std::string_view) { error_if(true); };
+  size_t required = sd.feed({bytes.data(), bytes.size() - 1}, false, vtor);
+  error_if(required != 1);
+  sd.clear();
+  required = sd.feed({bytes.data(), 8 /*name*/ + 3 /*str size*/ + 1 /*used byte from str*/}, false, vtor);
+  error_if(required != value.size() - 1);
+}
+
 TEST(decode_status) {
   hpack::encoder e;
   hpack::decoder de;
@@ -1102,6 +1119,7 @@ TEST(encode_with_cache) {
 }
 
 int main() {
+  test_stream_decoder_big_str();
   test_stream_decoder();
   test_tg_answer_parts();
   test_dyntable_move();

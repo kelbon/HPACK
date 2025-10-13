@@ -158,11 +158,11 @@ static size_type decode_dynamic_table_size_update(In& in, In e) {
 
 void decode_string(In& in, In e, decoded_string& out) {
   if (in == e)
-    throw incomplete_data_error();
+    throw incomplete_data_error(1);
   bool is_huffman = *in & 0b1000'0000;
   size_type str_len = decode_integer(in, e, 7);
   if (str_len > std::distance(in, e))
-    throw incomplete_data_error();
+    throw incomplete_data_error(str_len - std::distance(in, e));
   if (is_huffman)
     out.set_huffman((const char*)in, str_len);
   else
