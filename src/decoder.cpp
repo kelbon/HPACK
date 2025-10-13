@@ -132,8 +132,7 @@ static void decode_header_fully_indexed(In& in, In e, dynamic_table_t& dyntab, h
   out = entry;
 }
 
-// header with incremental indexing
-static void decode_header_cache(In& in, In e, dynamic_table_t& dyntab, header_view& out) {
+static void decode_header_incremental_indexing(In& in, In e, dynamic_table_t& dyntab, header_view& out) {
   assert(in != e && *in & 0b0100'0000);
   decode_header_impl(in, e, 6, dyntab, out);
   dyntab.add_entry(out.name.str(), out.value.str());
@@ -159,15 +158,15 @@ static size_type decode_dynamic_table_size_update(In& in, In e) {
 
 void decode_string(In& in, In e, decoded_string& out) {
   if (in == e)
-    throw HPACK_PROTOCOL_ERROR(incorrectly encoded string);
+    throw incomplete_data_error(1);
   bool is_huffman = *in & 0b1000'0000;
   size_type str_len = decode_integer(in, e, 7);
   if (str_len > std::distance(in, e))
-    throw HPACK_PROTOCOL_ERROR(size of encoded string not equal to data length);
+    throw incomplete_data_error(str_len - std::distance(in, e));
   if (is_huffman)
     out.set_huffman((const char*)in, str_len);
   else
-    out = std::string_view((const char*)in, str_len);
+    out.set_not_huffman((const char*)in, str_len);
   in += str_len;
 }
 
@@ -176,7 +175,7 @@ void decoder::decode_header(In& in, In e, header_view& out) {
   if (*in & 0b1000'0000)
     return decode_header_fully_indexed(in, e, dyntab, out);
   if (*in & 0b0100'0000)
-    return decode_header_cache(in, e, dyntab, out);
+    return decode_header_incremental_indexing(in, e, dyntab, out);
   if (*in & 0b0010'0000) {
     dyntab.update_size(decode_dynamic_table_size_update(in, e));
     out.name.reset();

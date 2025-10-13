@@ -57,7 +57,7 @@ O encode_string(std::string_view str, O _out) {
   if constexpr (!Huffman) {
     *out = 0;  // set H bit to 0
     out = encode_integer(str.size(), 7, out);
-    out = std::copy_n(str.data(), str.size(), out);
+    out = noexport::copy_n_fast(str.data(), str.size(), out);
   } else {
     out = encode_string_huffman(str, out);
   }

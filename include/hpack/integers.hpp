@@ -1,7 +1,7 @@
 #pragma once
 
 #include <concepts>
-
+#include <cassert>
 #include "hpack/basic_types.hpp"
 
 namespace hpack {
@@ -49,17 +49,19 @@ O encode_integer(std::type_identity_t<UInt> I, uint8_t N, O _out) noexcept {
   return noexport::unadapt<O>(out);
 }
 
+// precondition: N <= 8
 template <std::unsigned_integral UInt = size_type>
-[[nodiscard]] size_type decode_integer(In& in, In e, uint8_t N) {
+[[nodiscard]] UInt decode_integer(In& in, In e, uint8_t N) {
+  assert(N <= 8);
   const UInt prefix_mask = (1 << N) - 1;
-  // get first N bits
   auto pull = [&] {
     if (in == e)
-      throw HPACK_PROTOCOL_ERROR(invalid integer representation);
+      throw incomplete_data_error(2);
     auto i = *in;
     ++in;
     return i;
   };
+  // get first N bits
   UInt I = pull() & prefix_mask;
   if (I < prefix_mask)
     return I;
