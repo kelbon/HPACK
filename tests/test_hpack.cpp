@@ -1119,6 +1119,8 @@ TEST(encode_with_cache) {
 }
 
 int main() {
+  static_assert(hpack::noexport::can_insert_many<std::vector<hpack::byte_t>>);
+  static_assert(hpack::noexport::can_insert_many<std::vector<char>>);
   test_stream_decoder_big_str();
   test_stream_decoder();
   test_tg_answer_parts();

@@ -35,4 +35,19 @@ V decode_headers_block(decoder& dec, std::span<const byte_t> bytes, V visitor) {
   return visitor;
 }
 
+// should be used when endpoint wants to skip headers without breaking decoder state
+inline void ignore_headers_block(decoder& dec, std::span<const byte_t> bytes) {
+  // entry size calculated as name.size() + value.size() + 32,
+  // so minimal possible header to fit into dynamic table - "" "" with size 32
+  if (dec.dyntab.max_size() < 32)
+    return;
+  // maintains dynamic table in decoder
+  decode_headers_block(dec, bytes, [](std::string_view, std::string_view) {});
+}
+
+// should be used when endpoint wants to skip headers without breaking decoder state
+inline void ignore_headers_block(decoder& dec, In b, In e) {
+  ignore_headers_block(dec, std::span<const byte_t>(b, e));
+}
+
 }  // namespace hpack
