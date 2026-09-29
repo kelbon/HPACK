@@ -69,6 +69,8 @@ template <std::unsigned_integral UInt = size_type>
   uint8_t B;
   do {
     B = pull();
+    if (M >= sizeof(UInt) * 8) [[unlikely]]
+      throw HPACK_PROTOCOL_ERROR(integer overflow);
     UInt cpy = I;
     I += UInt(B & 0b0111'1111) << M;
     if (I < cpy)  // overflow

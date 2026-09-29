@@ -60,7 +60,7 @@ struct dynamic_table_t {
                            std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept;
 
   // this constructor may be used to set `user_protocol_max_size` to value other than `max_size`
-  // precondition: `protocol_max_size` <= `max_size`
+  // precondition: `protocol_max_size` >= `max_size`
   explicit dynamic_table_t(size_type max_size, size_type protocol_max_size,
                            std::pmr::memory_resource* m = std::pmr::get_default_resource()) noexcept
       : dynamic_table_t(max_size, m) {
@@ -125,7 +125,7 @@ struct dynamic_table_t {
   }
 
  private:
-  void evict_until_fits_into(size_type bytes) noexcept;
+  [[nodiscard]] entry_set_t evict_until_fits_into(size_type bytes) noexcept;
   // precondition: entry now in 'entries'
   index_type indexof(const entry_t& e) const noexcept;
 };
