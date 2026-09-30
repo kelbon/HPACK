@@ -5,10 +5,15 @@
 #include <bit>
 
 #define TEST(name) static void test_##name()
-#define error_if(...)    \
-  if (!!(__VA_ARGS__)) { \
-    exit(__LINE__);      \
-  }
+#define error_if(...)                                                                             \
+  do {                                                                                            \
+    if (!!(__VA_ARGS__)) {                                                                        \
+      std::fprintf(stderr, "%s:%d: in %s(): error_if(%s) failed\n", __FILE__, __LINE__, __func__, \
+                   #__VA_ARGS__);                                                                 \
+      std::fflush(stderr);                                                                        \
+      exit(__LINE__);                                                                             \
+    }                                                                                             \
+  } while (0)
 
 using hpack::decode_integer;
 using hpack::encode_integer;
@@ -24,6 +29,18 @@ static void test_number(uint32_t value_to_encode, uint8_t prefix_length, uint32_
   uint32_t x = decode_integer(in, encoded_end, prefix_length);
   error_if(x != value_to_encode);
   error_if(in != encoded_end);  // decoded all what encoded
+}
+
+TEST(decode_integer_encode_large_then_decode) {
+  uint8_t chars[12] = {};
+  uint8_t* end = encode_integer<uint64_t>(uint64_t(std::numeric_limits<uint32_t>::max()) + 1, 5, chars);
+  const hpack::byte_t* in = chars;
+  try {
+    uint32_t result = hpack::decode_integer(in, end, 5);
+  } catch (const hpack::protocol_error&) {
+    return;
+  }
+  error_if(true);
 }
 
 TEST(encode_decode_integers) {
@@ -1118,6 +1135,51 @@ TEST(encode_with_cache) {
   testone(hpack::static_table_t::status_204, "111", 1);
 }
 
+TEST(decode_incremental_indexing_name_uaf) {
+  struct poisoning_resource : std::pmr::memory_resource {
+    void* do_allocate(size_t bytes, size_t align) override {
+      return std::pmr::get_default_resource()->allocate(bytes, align);
+    }
+    void do_deallocate(void* p, size_t bytes, size_t align) override {
+      std::memset(p, 0xAA, bytes);
+      std::pmr::get_default_resource()->deallocate(p, bytes, align);
+    }
+    bool do_is_equal(const std::pmr::memory_resource& o) const noexcept override {
+      return this == &o;
+    }
+  } res;
+
+  // entry("name","") costs 4+0+32=36 bytes; max_size=100 leaves 64 free.
+  // A second entry with name from index 62 and 29-byte value costs 4+29+32=65 > 64,
+  // so the first entry is evicted while out.name still points into it.
+  const int max_size = 100;
+  const std::string long_value(29, 'v');
+
+  hpack::encoder enc(max_size);
+  bytes_t block1;
+  bytes_t block2;
+  enc.encode</*Cache=*/true>("name", "", std::back_inserter(block1));
+  enc.encode</*Cache=*/true>("name", long_value, std::back_inserter(block2));
+
+  hpack::decoder dec(max_size, &res);
+  hpack::header_view hdr;
+
+  const hpack::byte_t* in = block1.data();
+  dec.decode_header(in, in + block1.size(), hdr);
+  error_if(dec.dyntab.current_size() != 36);
+
+  // Decode the second header: entry 62 is evicted (poisoned) mid-decode,
+  // then entry_t::create() memcpy's from the freed (0xAA-filled) name pointer.
+  in = block2.data();
+  dec.decode_header(in, in + block2.size(), hdr);
+
+  // hdr.name is a string_view into the evicted (now freed) entry — dangling by design.
+  // The fix ensures the NEW dynamic table entry is created correctly.
+  auto entry = dec.dyntab.get_entry(62);
+  error_if(entry.name != "name");
+  error_if(entry.value != std::string_view(long_value));
+}
+
 int main() {
   static_assert(hpack::noexport::can_insert_many<std::vector<hpack::byte_t>>);
   static_assert(hpack::noexport::can_insert_many<std::vector<char>>);
@@ -1129,13 +1191,14 @@ int main() {
   test_encode_with_cache();
   test_search_dynamic();
   test_search();
-  test_fuzzing();
   test_invalid_headers();
   test_decode_headers_block_dyntab_update();
   test_decoded_string();
   test_tg_answer();
   test_encode_decode_with_eviction();
   test_encode_decode_huffman1();
+  test_decode_integer_encode_large_then_decode();
+  test_decode_incremental_indexing_name_uaf();
   test_encode_decode_integers();
   test_encode_decode1();
   test_huffman_table_itself();
@@ -1148,4 +1211,5 @@ int main() {
   test_dynamic_table_size_update();
   test_static_table_find_by_index();
   test_dyntab2();
+  test_fuzzing();
 }

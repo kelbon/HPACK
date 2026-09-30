@@ -102,10 +102,13 @@ index_type dynamic_table_t::add_entry(std::string_view name, std::string_view va
     reset();
     return 0;
   }
-  evict_until_fits_into(_max_size - new_entry_size);
+  // Evict without freeing: name/value may point into entries being evicted.
+  // entry_t::create() copies them first, then we free the evicted entries.
+  auto evicted = evict_until_fits_into(_max_size - new_entry_size);
   entries.push_back(entry_t::create(name, value, ++_insert_count, _resource));
   set.insert(*entries.back());
   _current_size += new_entry_size;
+  evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); });
   return static_table_t::first_unused_index;
 }
 
@@ -121,8 +124,9 @@ void dynamic_table_t::update_size(size_type new_max_size) {
   // limit MUST be treated as a decoding error"
   if (new_max_size > _user_protocol_max_size)
     throw HPACK_PROTOCOL_ERROR(dynamic table max size exceeds limit determined by protocol);
-  evict_until_fits_into(new_max_size);
+  auto evicted = evict_until_fits_into(new_max_size);
   _max_size = new_max_size;
+  evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); });
 }
 
 find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) const noexcept {
@@ -155,15 +159,17 @@ void dynamic_table_t::reset() noexcept {
   _current_size = 0;
 }
 
-void dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
+dynamic_table_t::entry_set_t dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
+  entry_set_t evicted;
   size_type i = 0;
   for (; _current_size > bytes; ++i) {
     _current_size -= entry_size(*entries[i]);
     set.erase(set.iterator_to(*entries[i]));
-    entry_t::destroy(entries[i], _resource);
+    evicted.insert(*entries[i]);
   }
   // evicts should be rare operation
   entries.erase(entries.begin(), entries.begin() + i);
+  return evicted;
 }
 
 table_entry dynamic_table_t::get_entry(index_type index) const noexcept {

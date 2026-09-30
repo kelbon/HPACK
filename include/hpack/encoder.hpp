@@ -277,7 +277,7 @@ struct encoder {
      follows a settings acknowledgment (see Section 6.5.3 of [HTTP2]).
   */
   template <Out O>
-  O encode_dynamic_table_size_update(size_type new_size, O _out) noexcept {
+  O encode_dynamic_table_size_update(size_type new_size, O _out) {
     /*
          0   1   2   3   4   5   6   7
        +---+---+---+---+---+---+---+---+

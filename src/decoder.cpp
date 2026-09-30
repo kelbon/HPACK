@@ -139,7 +139,7 @@ static void decode_header_incremental_indexing(In& in, In e, dynamic_table_t& dy
 }
 
 static void decode_header_without_indexing(In& in, In e, dynamic_table_t& dyntab, header_view& out) {
-  assert(in != e && (*in & 0x1111'0000) == 0);
+  assert(in != e && (*in & 0b1111'0000) == 0);
   return decode_header_impl(in, e, 4, dyntab, out);
 }
 
