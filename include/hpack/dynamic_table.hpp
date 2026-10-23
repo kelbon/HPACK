@@ -2,6 +2,9 @@
 
 #include <memory_resource>
 #include <vector>
+#include <cstring>  // memcpy
+#include <cassert>
+#include <memory>
 
 #include <boost/intrusive/set.hpp>
 
@@ -48,8 +51,9 @@ struct dynamic_table_t {
     }
     static void destroy(const entry_t* e, std::pmr::memory_resource* resource) noexcept {
       assert(e && resource);
+      size_t value_end = e->value_end;
       std::destroy_at(e);
-      resource->deallocate((void*)e, sizeof(entry_t) + e->value_end, alignof(entry_t));
+      resource->deallocate((void*)e, sizeof(entry_t) + value_end, alignof(entry_t));
     }
   };
 

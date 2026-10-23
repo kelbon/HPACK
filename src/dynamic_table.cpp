@@ -2,7 +2,6 @@
 #include "hpack/dynamic_table.hpp"
 
 #include <utility>
-#include <cstring>  // memcpy
 
 namespace hpack {
 
@@ -68,9 +67,16 @@ dynamic_table_t::entry_t* dynamic_table_t::add_entry(std::string_view name, std:
   auto evicted = evict_until_fits_into(_max_size - new_entry_size);
   noexport::scope_exit e{
       [&] { evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); }); }};
-  entry_t* entry = entry_t::create(name, value, ++_insert_count, _resource);
+  entry_t* entry = entry_t::create(name, value, _insert_count + 1, _resource);
+  bool failed = true;
+  noexport::scope_exit e2{[&] {
+    if (failed)
+      entry_t::destroy(entry, _resource);
+  }};
   entries.push_back(entry);
-  set.insert(*entries.back());
+  failed = false;
+  ++_insert_count;
+  set.insert(*entry);
   _current_size += new_entry_size;
   return entry;
 }

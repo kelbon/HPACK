@@ -1,5 +1,7 @@
 
 #include <charconv>
+#include <new>
+#include <cstring>
 #include <bit>
 
 #include "hpack/integers.hpp"
@@ -102,14 +104,17 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
 
 void decoded_string::allocate_and_set_not_huffman(const char* ptr, size_type len) {
   if (bytes_allocated() >= len) {
-    memcpy(const_cast<char*>(data), ptr, len);
+    if (len > 0)
+      memmove(const_cast<char*>(data), ptr, len);
     sz = len;
   } else {
     size_t sz_to_allocate = std::bit_ceil(len);
-    // при ошибке аллокации ничего не меняется
     char* newdata = (char*)malloc(sz_to_allocate);
+    if (!newdata)
+      throw std::bad_alloc();
+    if (len > 0)
+      memcpy(newdata, ptr, len);
     reset();
-    memcpy(newdata, ptr, len);
     data = newdata;
     sz = len;
     allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
@@ -136,16 +141,18 @@ static void decode_header_fully_indexed(In& in, In e, dynamic_table_t& dyntab, h
 static void decode_header_incremental_indexing(In& in, In e, dynamic_table_t& dyntab, header_view& out) {
   assert(in != e && *in & 0b0100'0000);
   decode_header_impl(in, e, 6, dyntab, out);
+  // здесь в out имя может ссылаться на таблицу (если не Хаффман), а значение ссылается на байты под [in, e]
+  // при add_entry имя может быть вытеснено, поэтому это дополнительно проверяется
+  const bool name_is_view = out.name.bytes_allocated() == 0;
   if (!dyntab.can_fit_entry(out.name.str(), out.value.str())) [[unlikely]] {
-    out.name.allocate_and_set_not_huffman(out.name.str());
-    out.value.allocate_and_set_not_huffman(out.value.str());
+    if (name_is_view)
+      out.name.allocate_and_set_not_huffman(out.name.str());
     dyntab.reset();  // по rfc таблица должна стать пустой
   } else {
-    auto* e = dyntab.add_entry(out.name.str(), out.value.str());
-    assert(e);
-    // старые значения могли быть удалены
-    out.name = e->name();
-    out.value = e->value();
+    auto* entry = dyntab.add_entry(out.name.str(), out.value.str());
+    assert(entry);
+    if (name_is_view)
+      out.name = entry->name();  // старое значение могло быть удалено
   }
 }
 
