@@ -1,24 +1,11 @@
 
 #include <charconv>
+#include <new>
+#include <cstring>
 #include <bit>
 
 #include "hpack/integers.hpp"
 #include "hpack/decoder.hpp"
-
-namespace {
-
-template <typename F>
-struct scope_exit {
-  F foo;
-
-  ~scope_exit() {
-    foo();
-  }
-};
-template <typename T>
-scope_exit(T) -> scope_exit<T>;
-
-}  // namespace
 
 namespace hpack {
 
@@ -98,7 +85,7 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
     const char* old_data = data;
     data = (char*)malloc(sz_to_allocate);
     bool failed = true;
-    scope_exit free_mem{[&] {
+    noexport::scope_exit free_mem{[&] {
       if (failed) {
         free((void*)data);
         data = old_data;
@@ -112,6 +99,25 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
     set_huffman(ptr, len);
 
     failed = false;
+  }
+}
+
+void decoded_string::allocate_and_set_not_huffman(const char* ptr, size_type len) {
+  if (bytes_allocated() >= len) {
+    if (len > 0)
+      memmove(const_cast<char*>(data), ptr, len);
+    sz = len;
+  } else {
+    size_t sz_to_allocate = std::bit_ceil(len);
+    char* newdata = (char*)malloc(sz_to_allocate);
+    if (!newdata)
+      throw std::bad_alloc();
+    if (len > 0)
+      memcpy(newdata, ptr, len);
+    reset();
+    data = newdata;
+    sz = len;
+    allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
   }
 }
 
@@ -135,7 +141,19 @@ static void decode_header_fully_indexed(In& in, In e, dynamic_table_t& dyntab, h
 static void decode_header_incremental_indexing(In& in, In e, dynamic_table_t& dyntab, header_view& out) {
   assert(in != e && *in & 0b0100'0000);
   decode_header_impl(in, e, 6, dyntab, out);
-  dyntab.add_entry(out.name.str(), out.value.str());
+  // здесь в out имя может ссылаться на таблицу (если не Хаффман), а значение ссылается на байты под [in, e]
+  // при add_entry имя может быть вытеснено, поэтому это дополнительно проверяется
+  const bool name_is_view = out.name.bytes_allocated() == 0;
+  if (!dyntab.can_fit_entry(out.name.str(), out.value.str())) [[unlikely]] {
+    if (name_is_view)
+      out.name.allocate_and_set_not_huffman(out.name.str());
+    dyntab.reset();  // по rfc таблица должна стать пустой
+  } else {
+    auto* entry = dyntab.add_entry(out.name.str(), out.value.str());
+    assert(entry);
+    if (name_is_view)
+      out.name = entry->name();  // старое значение могло быть удалено
+  }
 }
 
 static void decode_header_without_indexing(In& in, In e, dynamic_table_t& dyntab, header_view& out) {

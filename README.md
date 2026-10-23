@@ -21,7 +21,7 @@ decode
 #include <hpack/hpack.hpp>
 
 void decode_my_headers(hpack::decoder& d, std::span<const hpack::byte_t> bytes) {
-  hpack::decode_headers_block(e, bytes, [&](std::string_view name, std::string_view value) {
+  hpack::decode_headers_block(d, bytes, [&](std::string_view name, std::string_view value) {
     // use name/value somehow
   });
 }

@@ -1,6 +1,10 @@
 #pragma once
 
 #include <memory_resource>
+#include <vector>
+#include <cstring>  // memcpy
+#include <cassert>
+#include <memory>
 
 #include <boost/intrusive/set.hpp>
 
@@ -12,7 +16,46 @@ namespace hpack {
 namespace bi = boost::intrusive;
 
 struct dynamic_table_t {
-  struct entry_t;
+  using entry_set_hook = bi::set_base_hook<bi::link_mode<bi::normal_link>>;
+
+  struct entry_t : entry_set_hook {
+    const size_type name_end;
+    const size_type value_end;
+    const size_t _insert_c;
+    char data[];
+
+    entry_t(size_type name_len, size_type value_len, size_t insert_c) noexcept
+        : name_end(name_len), value_end(name_len + value_len), _insert_c(insert_c) {
+    }
+
+    std::string_view name() const noexcept {
+      return {data, data + name_end};
+    }
+    std::string_view value() const noexcept {
+      return {data + name_end, data + value_end};
+    }
+    size_type size() const noexcept {
+      return value_end;
+    }
+
+    static entry_t* create(std::string_view name, std::string_view value, size_t insert_c,
+                           std::pmr::memory_resource* resource) {
+      assert(resource);
+      void* bytes = resource->allocate(sizeof(entry_t) + name.size() + value.size(), alignof(entry_t));
+      entry_t* e = new (bytes) entry_t(name.size(), value.size(), insert_c);
+      if (!name.empty())
+        memcpy(+e->data, name.data(), name.size());
+      if (!value.empty())
+        memcpy(e->data + name.size(), value.data(), value.size());
+      return e;
+    }
+    static void destroy(const entry_t* e, std::pmr::memory_resource* resource) noexcept {
+      assert(e && resource);
+      size_t value_end = e->value_end;
+      std::destroy_at(e);
+      resource->deallocate((void*)e, sizeof(entry_t) + value_end, alignof(entry_t));
+    }
+  };
 
  private:
   struct key_of_entry {
@@ -22,7 +65,7 @@ struct dynamic_table_t {
 
   // invariant: do not contain nullptrs
   std::vector<entry_t*> entries;
-  using entry_set_hook = bi::set_base_hook<bi::link_mode<bi::normal_link>>;
+
   // sorted by name
   using entry_set_t = bi::multiset<entry_t, bi::constant_time_size<false>, bi::base_hook<entry_set_hook>,
                                    bi::key_of_value<key_of_entry>>;
@@ -84,8 +127,18 @@ struct dynamic_table_t {
 
   ~dynamic_table_t();
 
-  // returns index of added pair, 0 if cannot add
-  index_type add_entry(std::string_view name, std::string_view value);
+  [[nodiscard]] bool can_fit_entry(size_t new_entry_size) const {
+    return new_entry_size <= _max_size;
+  }
+  // возвращает true если такая entry вообще может уместится в таблицу, хотя бы одна
+  [[nodiscard]] bool can_fit_entry(std::string_view name, std::string_view value) const {
+    size_type new_entry_size = name.size() + value.size() + 32;
+    return can_fit_entry(new_entry_size);
+  }
+
+  // возвращает добавленную entry (или nullptr если вообще не влезает)
+  // индекс новой добавленной entry в динамической таблице всегда static_table_t::first_unused_index
+  entry_t* add_entry(std::string_view name, std::string_view value);
 
   size_type current_size() const noexcept {
     return _current_size;

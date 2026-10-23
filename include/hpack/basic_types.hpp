@@ -178,4 +178,19 @@ struct find_result_t {
   }
 };
 
+namespace noexport {
+
+template <typename F>
+struct scope_exit {
+  F foo;
+
+  ~scope_exit() {
+    foo();
+  }
+};
+template <typename T>
+scope_exit(T) -> scope_exit<T>;
+
+}  // namespace noexport
+
 }  // namespace hpack

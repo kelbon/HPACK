@@ -3,8 +3,10 @@
 #include "hpack/basic_types.hpp"
 #include "hpack/dynamic_table.hpp"
 
+#include <cstring>  // memmove
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace hpack {
 
@@ -51,6 +53,11 @@ struct decoded_string {
     reset();
     data = ptr;
     sz = len;
+  }
+
+  void allocate_and_set_not_huffman(const char* ptr, size_type len);
+  void allocate_and_set_not_huffman(std::string_view str) {
+    allocate_and_set_not_huffman(str.data(), str.size());
   }
 
   // not huffman encoded string

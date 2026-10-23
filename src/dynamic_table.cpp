@@ -2,47 +2,8 @@
 #include "hpack/dynamic_table.hpp"
 
 #include <utility>
-#include <cstring>  // memcpy
 
 namespace hpack {
-
-struct dynamic_table_t::entry_t : entry_set_hook {
-  const size_type name_end;
-  const size_type value_end;
-  const size_t _insert_c;
-  char data[];
-
-  entry_t(size_type name_len, size_type value_len, size_t insert_c) noexcept
-      : name_end(name_len), value_end(name_len + value_len), _insert_c(insert_c) {
-  }
-
-  std::string_view name() const noexcept {
-    return {data, data + name_end};
-  }
-  std::string_view value() const noexcept {
-    return {data + name_end, data + value_end};
-  }
-  size_type size() const noexcept {
-    return value_end;
-  }
-
-  static entry_t* create(std::string_view name, std::string_view value, size_t insert_c,
-                         std::pmr::memory_resource* resource) {
-    assert(resource);
-    void* bytes = resource->allocate(sizeof(entry_t) + name.size() + value.size(), alignof(entry_t));
-    entry_t* e = new (bytes) entry_t(name.size(), value.size(), insert_c);
-    if (!name.empty())
-      memcpy(+e->data, name.data(), name.size());
-    if (!value.empty())
-      memcpy(e->data + name.size(), value.data(), value.size());
-    return e;
-  }
-  static void destroy(const entry_t* e, std::pmr::memory_resource* resource) noexcept {
-    assert(e && resource);
-    std::destroy_at(e);
-    resource->deallocate((void*)e, sizeof(entry_t) + e->value_end, alignof(entry_t));
-  }
-};
 
 std::string_view dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
   return v.name();
@@ -95,21 +56,29 @@ dynamic_table_t::~dynamic_table_t() {
   reset();
 }
 
-// returns index of added pair, 0 if cannot add
-index_type dynamic_table_t::add_entry(std::string_view name, std::string_view value) {
+dynamic_table_t::entry_t* dynamic_table_t::add_entry(std::string_view name, std::string_view value) {
   size_type new_entry_size = name.size() + value.size() + 32;
-  if (_max_size < new_entry_size) [[unlikely]] {
+  if (!can_fit_entry(new_entry_size)) [[unlikely]] {
     reset();
-    return 0;
+    return nullptr;
   }
   // Evict without freeing: name/value may point into entries being evicted.
   // entry_t::create() copies them first, then we free the evicted entries.
   auto evicted = evict_until_fits_into(_max_size - new_entry_size);
-  entries.push_back(entry_t::create(name, value, ++_insert_count, _resource));
-  set.insert(*entries.back());
+  noexport::scope_exit e{
+      [&] { evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); }); }};
+  entry_t* entry = entry_t::create(name, value, _insert_count + 1, _resource);
+  bool failed = true;
+  noexport::scope_exit e2{[&] {
+    if (failed)
+      entry_t::destroy(entry, _resource);
+  }};
+  entries.push_back(entry);
+  failed = false;
+  ++_insert_count;
+  set.insert(*entry);
   _current_size += new_entry_size;
-  evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); });
-  return static_table_t::first_unused_index;
+  return entry;
 }
 
 void dynamic_table_t::set_user_protocol_max_size(size_type new_max_size) noexcept {
