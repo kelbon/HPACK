@@ -1135,7 +1135,7 @@ TEST(encode_with_cache) {
   testone(hpack::static_table_t::status_204, "111", 1);
 }
 
-TEST(decode_incremental_indexing_name_uaf) {
+TEST(decode_incremental_indexing_evict_referenced_name) {
   struct poisoning_resource : std::pmr::memory_resource {
     void* do_allocate(size_t bytes, size_t align) override {
       return std::pmr::get_default_resource()->allocate(bytes, align);
@@ -1167,22 +1167,40 @@ TEST(decode_incremental_indexing_name_uaf) {
   const hpack::byte_t* in = block1.data();
   dec.decode_header(in, in + block1.size(), hdr);
   error_if(dec.dyntab.current_size() != 36);
+  error_if(hdr.name.str() != "name");
 
   // Decode the second header: entry 62 is evicted (poisoned) mid-decode,
   // then entry_t::create() memcpy's from the freed (0xAA-filled) name pointer.
   in = block2.data();
   dec.decode_header(in, in + block2.size(), hdr);
+  error_if(dec.dyntab.current_size() != 65);
 
-  // hdr.name is a string_view into the evicted (now freed) entry — dangling by design.
-  // The fix ensures the NEW dynamic table entry is created correctly.
-  auto entry = dec.dyntab.get_entry(62);
-  error_if(entry.name != "name");
-  error_if(entry.value != std::string_view(long_value));
+  // The caller reads hdr after decode_header() returns. entry 62 was freed by
+  // add_entry() mid-decode, so with the bug this reads 0xAA garbage, not "name".
+  error_if(hdr.name.str() != "name");
+  error_if(hdr.value.str() != std::string_view(long_value));
+}
+
+TEST(dyntab_huge_entry) {
+  hpack::encoder enc(100);
+  bytes_t bytes;
+  auto out = std::back_inserter(bytes);
+  std::string value(100, 'a');
+  enc.encode_header_and_cache("name", value, out);
+
+  hpack::decoder dec(100);
+  hpack::In i = (const hpack::byte_t*)bytes.data();
+  hpack::In e = i + bytes.size();
+  hpack::header_view view;
+  dec.decode_header(i, e, view);
+  error_if(view.name != "name");
+  error_if(view.value != value);
 }
 
 int main() {
   static_assert(hpack::noexport::can_insert_many<std::vector<hpack::byte_t>>);
   static_assert(hpack::noexport::can_insert_many<std::vector<char>>);
+  test_dyntab_huge_entry();
   test_stream_decoder_big_str();
   test_stream_decoder();
   test_tg_answer_parts();
@@ -1198,7 +1216,7 @@ int main() {
   test_encode_decode_with_eviction();
   test_encode_decode_huffman1();
   test_decode_integer_encode_large_then_decode();
-  test_decode_incremental_indexing_name_uaf();
+  test_decode_incremental_indexing_evict_referenced_name();
   test_encode_decode_integers();
   test_encode_decode1();
   test_huffman_table_itself();
