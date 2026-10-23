@@ -1197,9 +1197,220 @@ TEST(dyntab_huge_entry) {
   error_if(view.value != value);
 }
 
+TEST(dyntab_add_entry_too_big_resets_table) {
+  hpack::dynamic_table_t t(100);
+  t.add_entry("name", "v");
+  error_if(t.current_size() != 37);
+  error_if(t.add_entry("name", std::string(100, 'a')) != nullptr);
+  error_if(t.current_size() != 0);
+  error_if(t.current_max_index() != hpack::static_table_t::first_unused_index - 1);
+}
+
+TEST(dyntab_add_entry_name_points_into_evicted) {
+  // fits exactly two entries, each is 3 + 1 + 32 bytes
+  hpack::dynamic_table_t t(72);
+  auto* a = t.add_entry("aaa", "1");
+  t.add_entry("bbb", "2");
+  // 'aaa' is evicted by this call, but its memory is used as a source for the new entry
+  auto* c = t.add_entry(a->name(), "3");
+  error_if(!c);
+  error_if(c->name() != "aaa" || c->value() != "3");
+  error_if(t.get_entry(62).name != "aaa");
+  error_if(t.get_entry(63).name != "bbb");
+  error_if(t.current_size() != 72);
+}
+
+TEST(decoded_string_allocate_and_set_not_huffman) {
+  hpack::decoded_string s;
+  // empty string from initial state, no memcpy with nullptr
+  s.allocate_and_set_not_huffman(nullptr, 0);
+  error_if(s);
+  error_if(s.bytes_allocated());
+  s.allocate_and_set_not_huffman("", 0);
+  error_if(s);
+  error_if(s.bytes_allocated());
+
+  // view -> owned copy
+  std::string src = "hello world";
+  s = std::string_view(src);
+  error_if(s.bytes_allocated());
+  s.allocate_and_set_not_huffman(s.str());
+  error_if(s != "hello world");
+  error_if(s.bytes_allocated() != std::bit_ceil(src.size()));
+  error_if(s.str().data() == src.data());
+  src.assign(src.size(), 'X');
+  error_if(s != "hello world");  // owns memory
+
+  // copy of own content
+  s.allocate_and_set_not_huffman(s.str());
+  error_if(s != "hello world");
+
+  // smaller string reuses memory
+  const char* before = s.str().data();
+  s.allocate_and_set_not_huffman("abc", 3);
+  error_if(s != "abc");
+  error_if(s.str().data() != before);
+  error_if(s.bytes_allocated() != std::bit_ceil(src.size()));
+
+  // empty string, memory is kept
+  s.allocate_and_set_not_huffman("", 0);
+  error_if(s);
+  error_if(s != "");
+  error_if(s.bytes_allocated() != std::bit_ceil(src.size()));
+
+  // bigger string reallocates
+  std::string big(100, 'z');
+  s.allocate_and_set_not_huffman(big);
+  error_if(s != std::string_view(big));
+  error_if(s.bytes_allocated() != std::bit_ceil(big.size()));
+
+  // source points into own memory (overlap)
+  big.assign("0123456789abcdefghij");
+  s.allocate_and_set_not_huffman(big);
+  std::string_view own = s.str();
+  s.allocate_and_set_not_huffman(own.data() + 10, 10);
+  error_if(s != "abcdefghij");
+
+  s.reset();
+  error_if(s.bytes_allocated());
+}
+
+// name is index of an entry in dynamic table which cannot fit the new entry, so table is reset
+TEST(decode_incremental_indexing_indexed_name_does_not_fit) {
+  for (bool huffman : {false, true}) {
+    hpack::encoder enc(100);
+    hpack::decoder dec(100);
+    bytes_t b1, b2;
+    const std::string big(100, 'a');
+    if (huffman) {
+      enc.encode_header_and_cache<true>("name", "v", std::back_inserter(b1));
+      enc.encode_header_and_cache<true>(hpack::index_type(62), big, std::back_inserter(b2));
+    } else {
+      enc.encode_header_and_cache("name", "v", std::back_inserter(b1));
+      enc.encode_header_and_cache(hpack::index_type(62), big, std::back_inserter(b2));
+    }
+    hpack::header_view hdr;
+    const hpack::byte_t* in = b1.data();
+    dec.decode_header(in, b1.data() + b1.size(), hdr);
+    error_if(dec.dyntab.current_size() != 37);
+    in = b2.data();
+    // 4 + 100 + 32 > 100
+    dec.decode_header(in, b2.data() + b2.size(), hdr);
+    error_if(in != b2.data() + b2.size());
+    error_if(dec.dyntab.current_size() != 0);
+    error_if(dec.dyntab.current_max_index() != hpack::static_table_t::first_unused_index - 1);
+    // 'name' pointed into freed entry, but hdr must stay valid
+    error_if(hdr.name.str() != "name");
+    error_if(hdr.value.str() != std::string_view(big));
+  }
+}
+
+// both name and value (huffman encoded, so owned by header_view) do not fit into table
+TEST(decode_incremental_indexing_does_not_fit_huffman) {
+  hpack::encoder enc(4096);
+  bytes_t bytes;
+  headers_t headers{
+      {"www.example.com", "www.example.org"},
+      {"custom-name-hdr", "custom-value-xyz"},
+      {"x-empty", ""},
+      {"", "empty-name"},
+  };
+  for (auto& [n, v] : headers)
+    enc.encode_header_and_cache<true>(n, v, std::back_inserter(bytes));
+  // table with max size 0, every entry does not fit
+  hpack::decoder dec(0);
+  hpack::header_view hdr;
+  const hpack::byte_t* in = bytes.data();
+  const hpack::byte_t* e = in + bytes.size();
+  headers_t decoded;
+  // same header_view is reused
+  while (in != e) {
+    dec.decode_header(in, e, hdr);
+    decoded.emplace_back(std::string(hdr.name.str()), std::string(hdr.value.str()));
+    error_if(dec.dyntab.current_size() != 0);
+  }
+  error_if(decoded != headers);
+}
+
+// empty strings in not fitting entry, header_view is default constructed (data == nullptr)
+TEST(decode_incremental_indexing_empty_strings_do_not_fit) {
+  for (bool huffman : {false, true}) {
+    hpack::encoder enc;
+    bytes_t bytes;
+    if (huffman)
+      enc.encode_header_and_cache<true>("x-empty", "", std::back_inserter(bytes));
+    else
+      enc.encode_header_and_cache("x-empty", "", std::back_inserter(bytes));
+    hpack::decoder dec(0);
+    hpack::header_view hdr;
+    const hpack::byte_t* in = bytes.data();
+    dec.decode_header(in, bytes.data() + bytes.size(), hdr);
+    error_if(in != bytes.data() + bytes.size());
+    error_if(hdr.name.str() != "x-empty");
+    error_if(!hdr.value.str().empty());
+    error_if(dec.dyntab.current_size() != 0);
+  }
+}
+
+// name of the new entry is evicted by the entry itself, value is huffman decoded (owned by header_view)
+TEST(decode_incremental_indexing_evict_referenced_name_huffman_value) {
+  // table fits exactly two entries (name 4 + value 28 + 32 = 64)
+  hpack::encoder enc(128);
+  hpack::decoder dec(128);
+  const std::string v1(28, 'a'), v2(28, 'b'), v3(28, 'c'), v4(28, 'd');
+  bytes_t bytes;
+  enc.encode_header_and_cache<true>("nam1", v1, std::back_inserter(bytes));  // index 62
+  enc.encode_header_and_cache<true>("nam2", v2, std::back_inserter(bytes));  // 62, previous is 63
+  // name from entry 63 ('nam1'), which is evicted by adding this entry
+  enc.encode_header_and_cache<true>(hpack::index_type(63), v3, std::back_inserter(bytes));
+  // name from entry 63 again, now it is 'nam2'
+  enc.encode_header_and_cache<true>(hpack::index_type(63), v4, std::back_inserter(bytes));
+  hpack::header_view hdr;
+  const hpack::byte_t* in = bytes.data();
+  const hpack::byte_t* e = in + bytes.size();
+  headers_t decoded;
+  while (in != e) {
+    dec.decode_header(in, e, hdr);
+    decoded.emplace_back(std::string(hdr.name.str()), std::string(hdr.value.str()));
+  }
+  headers_t expected{{"nam1", v1}, {"nam2", v2}, {"nam1", v3}, {"nam2", v4}};
+  error_if(decoded != expected);
+  error_if(dec.dyntab.current_size() != 128);
+  error_if(dec.dyntab.get_entry(62).name != "nam2" || dec.dyntab.get_entry(62).value != v4);
+}
+
+// huffman decoded strings in header_view keep their memory between decode_header calls
+TEST(decode_incremental_indexing_keeps_huffman_buffers) {
+  hpack::encoder enc;
+  bytes_t bytes;
+  enc.encode_header_and_cache<true>("www.example.com", "www.example.org", std::back_inserter(bytes));
+  enc.encode_header_and_cache<true>("www.example.net", "www.example.edu", std::back_inserter(bytes));
+  hpack::decoder dec;
+  hpack::header_view hdr;
+  const hpack::byte_t* in = bytes.data();
+  const hpack::byte_t* e = in + bytes.size();
+  dec.decode_header(in, e, hdr);
+  error_if(hdr.name.str() != "www.example.com" || hdr.value.str() != "www.example.org");
+  error_if(!hdr.name.bytes_allocated() || !hdr.value.bytes_allocated());
+  const char* name_ptr = hdr.name.str().data();
+  const char* value_ptr = hdr.value.str().data();
+  dec.decode_header(in, e, hdr);
+  error_if(hdr.name.str() != "www.example.net" || hdr.value.str() != "www.example.edu");
+  error_if(hdr.name.str().data() != name_ptr);
+  error_if(hdr.value.str().data() != value_ptr);
+}
+
 int main() {
   static_assert(hpack::noexport::can_insert_many<std::vector<hpack::byte_t>>);
   static_assert(hpack::noexport::can_insert_many<std::vector<char>>);
+  test_dyntab_add_entry_too_big_resets_table();
+  test_dyntab_add_entry_name_points_into_evicted();
+  test_decoded_string_allocate_and_set_not_huffman();
+  test_decode_incremental_indexing_indexed_name_does_not_fit();
+  test_decode_incremental_indexing_does_not_fit_huffman();
+  test_decode_incremental_indexing_empty_strings_do_not_fit();
+  test_decode_incremental_indexing_evict_referenced_name_huffman_value();
+  test_decode_incremental_indexing_keeps_huffman_buffers();
   test_dyntab_huge_entry();
   test_stream_decoder_big_str();
   test_stream_decoder();
