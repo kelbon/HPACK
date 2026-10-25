@@ -43,6 +43,22 @@ TEST(decode_integer_encode_large_then_decode) {
   error_if(true);
 }
 
+// last byte bits, which do not fit into integer, must not be dropped
+TEST(decode_integer_overflow_in_last_byte) {
+  // 31 + 2^32 and 31 + 127 * 2^28
+  const hpack::byte_t bytes[][6] = {{0x1F, 0x80, 0x80, 0x80, 0x80, 0x10},
+                                    {0x1F, 0x80, 0x80, 0x80, 0x80, 0x7F}};
+  for (auto& b : bytes) {
+    const hpack::byte_t* in = b;
+    try {
+      (void)hpack::decode_integer(in, b + 6, 5);
+      error_if(true);
+    } catch (const hpack::protocol_error&) {
+      // good
+    }
+  }
+}
+
 TEST(encode_decode_integers) {
   test_number(1337, 5, 3);
   test_number(10, 5, 1);
@@ -1427,6 +1443,7 @@ int main() {
   test_encode_decode_with_eviction();
   test_encode_decode_huffman1();
   test_decode_integer_encode_large_then_decode();
+  test_decode_integer_overflow_in_last_byte();
   test_decode_incremental_indexing_evict_referenced_name();
   test_encode_decode_integers();
   test_encode_decode1();

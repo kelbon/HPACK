@@ -95,6 +95,8 @@ void decoded_string::set_huffman(const char* ptr, size_type len) {
           free((void*)old_data);
       }
     }};
+    if (!data)
+      throw std::bad_alloc();
     // recursive call into branch where we have enough memory
     set_huffman(ptr, len);
 
