@@ -71,8 +71,12 @@ template <std::unsigned_integral UInt = size_type>
     B = pull();
     if (M >= sizeof(UInt) * 8) [[unlikely]]
       throw HPACK_PROTOCOL_ERROR(integer overflow);
+    UInt part = B & 0b0111'1111;
+    // shift drops high bits of last part silently
+    if (M != 0 && (part >> (sizeof(UInt) * 8 - M)) != 0) [[unlikely]]
+      throw HPACK_PROTOCOL_ERROR(integer overflow);
     UInt cpy = I;
-    I += UInt(B & 0b0111'1111) << M;
+    I += part << M;
     if (I < cpy)  // overflow
       throw HPACK_PROTOCOL_ERROR(integer overflow);
     M += 7;
