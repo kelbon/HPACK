@@ -1,11 +1,27 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 
 #include "hpack/basic_types.hpp"
 #include "hpack/integers.hpp"
 
 namespace hpack {
+
+namespace noexport {
+
+struct huffman_code_t {
+  uint32_t code;  // most significant bit first
+  uint8_t len;    // in bits
+};
+
+// index is symbol, 256 - EOS
+inline constexpr huffman_code_t huffman_codes[257] = {
+#define HUFFMAN_TABLE(index, bits, bitcount) {0b##bits, bitcount},
+#include "hpack/huffman_table.def"
+};
+
+}  // namespace noexport
 
 template <Out O>
 O encode_string_huffman(std::string_view str, O _out) {
@@ -14,32 +30,30 @@ O encode_string_huffman(std::string_view str, O _out) {
   // (size should be before string and len in bits depends on 'len' value)
   size_type len_after_encode = 0;
   for (char c : str)
-    len_after_encode += huffman_table_get(uint8_t(c)).bit_count;
+    len_after_encode += noexport::huffman_codes[uint8_t(c)].len;
   *out = 0b1000'0000;  // set H bit
-  // % 8 for guarantee, that padding ALWAYS < 7 bits. Its makes no sense to add entire byte or more padding
+  // padding is always < 8 bits
   // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
-  const int padlen = (8 - len_after_encode % 8) % 8;
-  out = encode_integer((len_after_encode + padlen) / 8, 7, out);
-  auto push_bit = [&, bitn = 7](bool bit) mutable {
-    if (bitn == 7)
-      *out = 0;
-    *out |= (bit << bitn);
-    if (bitn == 0) {
-      ++out;
-      bitn = 7;
-      // not set out to 0, because may be end
-    } else {
-      --bitn;
-    }
-  };
+  out = encode_integer((len_after_encode + 7) / 8, 7, out);
+  // codes are appended to the low bits of 'acc', 'bits' - count of low bits not written yet (< 8 between
+  // symbols). Max code len is 30, so 'acc' never loses unwritten bits
+  uint64_t acc = 0;
+  int bits = 0;
   for (char c : str) {
-    sym_info_t bits = huffman_table_get(uint8_t(c));
-    for (int i = 0; i < bits.bit_count; ++i)
-      push_bit(bits.bits & (1 << i));
+    noexport::huffman_code_t sym = noexport::huffman_codes[uint8_t(c)];
+    acc = (acc << sym.len) | sym.code;
+    bits += sym.len;
+    while (bits >= 8) {
+      bits -= 8;
+      *out = byte_t(acc >> bits);
+      ++out;
+    }
   }
-  // padding MUST BE formed from EOS la-la-la (just 111..)
-  for (int i = 0; i < padlen; ++i)
-    push_bit(true);
+  if (bits > 0) {
+    // padding MUST be formed from most significant bits of EOS (all ones)
+    *out = byte_t((acc << (8 - bits)) | (0xFF >> bits));
+    ++out;
+  }
   return noexport::unadapt<O>(out);
 }
 

@@ -3,6 +3,7 @@
 #include <cassert>
 
 #include "hpack/basic_types.hpp"
+#include "hpack/strings.hpp"
 
 namespace hpack {
 
@@ -397,6 +398,123 @@ uint16_t huffman_decode_table_find(sym_info_t info) {
   }
 end:
   return uint16_t(-1);
+}
+
+namespace {
+
+// Decoding tables.
+// Fast path: top K bits of input are index in 'lut', which gives symbol and its len for codes <= K bits.
+// Most of symbols used in headers have codes <= 10 bits.
+// Slow path (codes > K bits): the code is canonical (codes of one len are consecutive), so symbol
+// is found by comparing top 'len' bits with first code of each len.
+struct huffman_decode_tables_t {
+  static constexpr int K = 11;
+  // symbol | (len << 9), 0 if code is longer than K
+  uint16_t lut[1 << K] = {};
+  uint32_t first[31] = {};    // first code of len
+  uint16_t count[31] = {};    // count of codes of len
+  uint16_t offset[31] = {};   // index of first symbol of len in 'sorted'
+  uint16_t sorted[257] = {};  // symbols sorted by code
+};
+
+consteval huffman_decode_tables_t make_huffman_decode_tables() {
+  using noexport::huffman_codes;
+  huffman_decode_tables_t t;
+  constexpr int K = huffman_decode_tables_t::K;
+  for (uint16_t sym = 0; sym < 257; ++sym) {
+    auto [code, len] = huffman_codes[sym];
+    if (len > K)
+      continue;
+    for (uint32_t x = 0; x < (1u << (K - len)); ++x)
+      t.lut[(code << (K - len)) | x] = sym | (len << 9);
+  }
+  uint16_t n = 0;
+  uint64_t kraft = 0;
+  for (int len = 1; len <= 30; ++len) {
+    t.offset[len] = n;
+    for (uint16_t sym = 0; sym < 257; ++sym) {
+      if (huffman_codes[sym].len != len)
+        continue;
+      if (t.count[len] == 0)
+        t.first[len] = huffman_codes[sym].code;
+      // canonical code: codes of one len are consecutive in order of symbols
+      if (huffman_codes[sym].code != t.first[len] + t.count[len])
+        throw "Huffman code is not canonical";
+      ++t.count[len];
+      t.sorted[n++] = sym;
+      kraft += uint64_t(1) << (30 - len);
+    }
+  }
+  // every 30 bits starts with some code, so slow path always finds a symbol
+  if (n != 257 || kraft != (uint64_t(1) << 30))
+    throw "Huffman code is not complete";
+  return t;
+}
+
+constexpr huffman_decode_tables_t huffman_decode_tables = make_huffman_decode_tables();
+
+}  // namespace
+
+char* huffman_decode(In in, size_type len, char* out) {
+  constexpr const huffman_decode_tables_t& T = huffman_decode_tables;
+  constexpr int K = huffman_decode_tables_t::K;
+  In e = in + len;
+  // not decoded bits, most significant bit first. 'bits' - count of loaded bits
+  uint64_t acc = 0;
+  int bits = 0;
+  for (;;) {
+    if (e - in >= 8) [[likely]] {
+      // loads 8 bytes, but consumes only whole bytes which fit into 'acc'.
+      // Bits below 'bits' are bits of next bytes, next load will set them to the same values
+      uint64_t w = 0;
+      for (int i = 0; i < 8; ++i)
+        w = (w << 8) | in[i];
+      acc |= w >> bits;
+      in += (63 - bits) >> 3;
+      bits |= 56;
+    } else {
+      for (; bits <= 56 && in != e; ++in, bits += 8)
+        acc |= uint64_t(*in) << (56 - bits);
+      if (bits == 0)
+        return out;
+    }
+    // max code len is 30, so while bits >= 30 next code is fully loaded.
+    // At the end of input all bits are loaded
+    do {
+      uint16_t entry = T.lut[acc >> (64 - K)];
+      uint16_t sym = entry & 0x1FF;
+      int sym_len = entry >> 9;
+      if (sym_len == 0) [[unlikely]] {
+        for (sym_len = K + 1; sym_len <= 30; ++sym_len) {
+          uint32_t code = uint32_t(acc >> (64 - sym_len));
+          if (code - T.first[sym_len] < T.count[sym_len]) {
+            sym = T.sorted[T.offset[sym_len] + (code - T.first[sym_len])];
+            break;
+          }
+        }
+      }
+      if (sym_len > bits) [[unlikely]] {
+        // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
+        // A padding strictly longer than 7 bits MUST be treated as a decoding error.
+        if (bits > 7)
+          throw HPACK_PROTOCOL_ERROR(padding strictly longer than 7 bits);
+        // A padding not corresponding to the most significant bits of the code for the EOS symbol MUST be
+        // treated as a decoding error
+        if ((acc >> (64 - bits)) != (1u << bits) - 1)
+          throw HPACK_PROTOCOL_ERROR(invalid padding);
+        return out;
+      }
+      // A Huffman-encoded string literal containing the EOS symbol MUST be treated as a decoding error.
+      if (sym == 256) [[unlikely]]
+        throw HPACK_PROTOCOL_ERROR(Huffman encoded string literal containing the EOS symbol);
+      *out = char(sym);
+      ++out;
+      acc <<= sym_len;
+      bits -= sym_len;
+    } while (bits >= 30 || (in == e && bits > 0));
+    if (in == e)
+      return out;
+  }
 }
 
 }  // namespace hpack

@@ -45,6 +45,12 @@ using index_type = uint32_t;
 using byte_t = unsigned char;
 using In = const byte_t*;
 
+// decodes Huffman encoded string [in, in + len) into 'out'
+// 'out' must have space for len * 8 / 5 bytes (worst case, all symbols are 5 bits)
+// returns end of decoded string
+// throws protocol_error on EOS symbol or invalid padding
+char* huffman_decode(In in, size_type len, char* out);
+
 template <typename T>
 concept Out = std::output_iterator<T, byte_t>;
 

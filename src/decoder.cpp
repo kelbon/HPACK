@@ -14,68 +14,11 @@ namespace hpack {
   return size_t(huffman_str_len) * 8 / 5;
 }
 
-// precondition: in != e
-// note: 'len' must be decoded before calling this function
-template <Out O>
-static O decode_string_huffman(In in, size_type len, O out) {
-  In e = in + len;
-  sym_info_t info{0, 0};
-  int bit_nmb = 0;
-  auto next_bit = [&] {
-    bool bit = *in & (0b1000'0000 >> bit_nmb);
-    if (bit_nmb == 7) {
-      bit_nmb = 0;
-      ++in;
-    } else {
-      ++bit_nmb;
-    }
-    return bit;
-  };
-  for (;;) {
-    // min symbol len in Huffman table is 5 bits
-    for (int i = 0; in != e && i < 5; ++i, ++info.bit_count) {
-      info.bits <<= 1;
-      info.bits += next_bit();
-    }
-    uint16_t sym;
-    while ((sym = huffman_decode_table_find(info)) == uint16_t(-1) && in != e) {
-      info.bits <<= 1;
-      info.bits += next_bit();
-      ++info.bit_count;
-    }
-    if (sym == 256) [[unlikely]] {
-      // EOS
-      while (bit_nmb != 0)  // skip padding
-        next_bit();
-      // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
-      // A Huffman-encoded string literal containing the EOS symbol MUST be treated as a decoding error.
-      throw HPACK_PROTOCOL_ERROR(Huffman encoded string literal containing the EOS symbol);
-    }
-    if (sym != uint16_t(-1)) {
-      info = {};
-      *out = byte_t(sym);
-      ++out;
-    } else if (info.bit_count > 7) {
-      // symbol is not resolved and its > 7 bit,
-      // https://datatracker.ietf.org/doc/html/rfc7541#section-5.2
-      // A padding strictly longer than 7 bits MUST be treated as a decoding error.
-      throw HPACK_PROTOCOL_ERROR(padding strictly longer than 7 bits);
-    }
-    if (in == e) {
-      if (std::countr_one(info.bits) != info.bit_count)
-        throw HPACK_PROTOCOL_ERROR(invalid padding);
-      return out;
-    }
-  }
-  return out;
-}
-
 void decoded_string::set_huffman(const char* ptr, size_type len) {
   // also handles case when len == 0
   if (bytes_allocated() >= max_huffman_string_size_after_decode(len)) {
-    const byte_t* in = (const byte_t*)ptr;
     // const cast because im owner of pointer (its allocated by malloc)
-    char* end = decode_string_huffman(in, len, const_cast<char*>(data));
+    char* end = huffman_decode((In)ptr, len, const_cast<char*>(data));
     sz = end - data;
   } else {
     size_t sz_to_allocate = std::bit_ceil(max_huffman_string_size_after_decode(len));
