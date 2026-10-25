@@ -1,5 +1,4 @@
 
-#include <charconv>
 #include <new>
 #include <cstring>
 #include <bit>
@@ -244,12 +243,15 @@ int decoder::decode_response_status(In& in, In e) {
   if (!header)
     throw HPACK_PROTOCOL_ERROR(header block only with dynamic_table_size_update);
   std::string_view code = header.value.str();
-  if (header.name.str() != ":status" || code.size() != 3)
+  auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+  if (header.name.str() != ":status" || code.size() != 3 || !is_digit(code[0]) || !is_digit(code[1]) ||
+      !is_digit(code[2])) {
     throw HPACK_PROTOCOL_ERROR(invalid first header, expected ":status" with 3 digit code);
-  int status_code;
-  auto [_, err] = std::from_chars(code.data(), code.data() + 3, status_code);
-  if (err != std::errc{})
-    throw HPACK_PROTOCOL_ERROR(invalid ":status" value, not a number);
+  }
+  int status_code = (code[0] - '0') * 100 + (code[1] - '0') * 10 + (code[2] - '0');
+  // https://www.rfc-editor.org/rfc/rfc9110#section-15
+  if (status_code < 100 || status_code > 599)
+    throw HPACK_PROTOCOL_ERROR(invalid ":status" value, must be in[100, 599]);
   return status_code;
 }
 

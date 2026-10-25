@@ -212,8 +212,12 @@ struct stream_decoder {
   // e.g. may be used to detect too big string before receiving it
   template <typename V>
   size_t feed(std::span<byte_t> chunk, bool last_chunk, V&& visitor) {
-    if (chunk.empty()) [[unlikely]]
+    if (chunk.empty()) [[unlikely]] {
+      // last chunk ends in the middle of header
+      if (last_chunk && !incomplete.empty())
+        throw incomplete_data_error(1);
       return 0;
+    }
     size_t approx;
     if (!incomplete.empty()) {
       incomplete.insert(incomplete.end(), chunk.begin(), chunk.end());
