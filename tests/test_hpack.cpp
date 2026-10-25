@@ -59,6 +59,42 @@ TEST(decode_integer_overflow_in_last_byte) {
   }
 }
 
+// ":status" is three digits in range [100, 599]
+TEST(decode_status_invalid) {
+  for (std::string_view v : {"-50", "-1 ", "0  ", "2xx", "099", "1e2", "600"}) {
+    hpack::encoder enc;
+    std::vector<uint8_t> block;
+    enc.encode<false, false>(":status", v, std::back_inserter(block));
+    hpack::decoder dec;
+    const hpack::byte_t* in = block.data();
+    try {
+      (void)dec.decode_response_status(in, block.data() + block.size());
+      error_if(true);
+    } catch (const hpack::protocol_error&) {
+      // good
+    }
+  }
+}
+
+// empty last chunk while header is not complete
+TEST(stream_decoder_empty_last_chunk) {
+  hpack::encoder enc;
+  std::vector<uint8_t> block;
+  enc.encode<false, false>("name", "value-value-value", std::back_inserter(block));
+  hpack::decoder dec;
+  hpack::stream_decoder sd(dec);
+  std::vector<uint8_t> part(block.begin(), block.begin() + 5);
+  std::vector<uint8_t> empty;
+  auto visitor = [](std::string_view, std::string_view) {};
+  (void)sd.feed(part, false, visitor);
+  try {
+    (void)sd.feed(empty, true, visitor);
+    error_if(true);
+  } catch (const hpack::incomplete_data_error&) {
+    // good
+  }
+}
+
 TEST(encode_decode_integers) {
   test_number(1337, 5, 3);
   test_number(10, 5, 1);
@@ -1444,6 +1480,8 @@ int main() {
   test_encode_decode_huffman1();
   test_decode_integer_encode_large_then_decode();
   test_decode_integer_overflow_in_last_byte();
+  test_decode_status_invalid();
+  test_stream_decoder_empty_last_chunk();
   test_decode_incremental_indexing_evict_referenced_name();
   test_encode_decode_integers();
   test_encode_decode1();
