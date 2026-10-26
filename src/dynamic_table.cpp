@@ -1,18 +1,85 @@
 
 #include "hpack/dynamic_table.hpp"
 
+#include <cstring>
 #include <utility>
 
 namespace hpack {
 
-std::string_view dynamic_table_t::key_of_entry::operator()(const dynamic_table_t::entry_t& v) const noexcept {
-  return v.name();
-}
-
-// precondition: 'e' now in entries
 index_type dynamic_table_t::indexof(const dynamic_table_t::entry_t& e) const noexcept {
   return static_table_t::first_unused_index + (_insert_count - e._insert_c);
 }
+
+namespace {
+
+using entry_t = dynamic_table_t::entry_t;
+
+// MurmurHash64A (Austin Appleby, public domain), тот же, что std::hash в libstdc++ на 64-битных платформах
+// Note: не защищён от hash flooding, но длина списков в корзинах всё равно ограничена числом записей
+uint64_t hash_bytes(std::string_view s, uint64_t seed) noexcept {
+  constexpr uint64_t m = 0xc6a4a7935bd1e995;
+  constexpr int r = 47;
+  uint64_t h = seed ^ (s.size() * m);
+  const char* p = s.data();
+  size_t n = s.size();
+  for (; n >= 8; p += 8, n -= 8) {
+    uint64_t k;
+    memcpy(&k, p, 8);
+    k *= m;
+    k ^= k >> r;
+    k *= m;
+    h ^= k;
+    h *= m;
+  }
+  if (n != 0) {
+    uint64_t tail = 0;
+    for (size_t i = 0; i < n; ++i)
+      tail |= uint64_t(uint8_t(p[i])) << (i * 8);
+    h ^= tail;
+    h *= m;
+  }
+  h ^= h >> r;
+  h *= m;
+  h ^= h >> r;
+  return h;
+}
+
+uint64_t hash_name(std::string_view name) noexcept {
+  return hash_bytes(name, 0);
+}
+
+uint64_t hash_pair(uint64_t name_hash, std::string_view value) noexcept {
+  return hash_bytes(value, name_hash);
+}
+
+bool has_name(const entry_t& e, uint64_t name_hash, std::string_view name) noexcept {
+  return e.name_hash == name_hash && e.name() == name;
+}
+
+bool has_pair(const entry_t& e, uint64_t pair_hash, std::string_view name, std::string_view value) noexcept {
+  return e.pair_hash == pair_hash && e.name() == name && e.value() == value;
+}
+
+// precondition: buckets.size() — степень двойки
+template <typename Bucket>
+Bucket& bucket_for(std::vector<Bucket>& buckets, uint64_t hash) noexcept {
+  return buckets[hash & (buckets.size() - 1)];
+}
+template <typename Bucket>
+const Bucket& bucket_for(const std::vector<Bucket>& buckets, uint64_t hash) noexcept {
+  return buckets[hash & (buckets.size() - 1)];
+}
+
+// первая запись в 'bucket', для которой 'pred' вернул true, или nullptr
+template <typename Bucket, typename Pred>
+const entry_t* find_in(const Bucket& bucket, Pred pred) noexcept {
+  for (const entry_t& e : bucket)
+    if (pred(e))
+      return &e;
+  return nullptr;
+}
+
+}  // namespace
 
 static size_type entry_size(const dynamic_table_t::entry_t& entry) noexcept {
   /*
@@ -36,7 +103,8 @@ void dynamic_table_t::swap(dynamic_table_t& other) noexcept {
   using std::swap;
   swap(ring, other.ring);
   swap(_count, other._count);
-  swap(set, other.set);
+  swap(by_name, other.by_name);
+  swap(by_pair, other.by_pair);
   swap(_current_size, other._current_size);
   swap(_max_size, other._max_size);
   swap(_user_protocol_max_size, other._user_protocol_max_size);
@@ -68,21 +136,45 @@ dynamic_table_t::entry_t* dynamic_table_t::add_entry(std::string_view name, std:
   // if throws, table is not changed
   if (_count - evicted.count == ring.size())
     grow_ring();
-  entry_t* entry = entry_t::create(name, value, _insert_count + 1, _resource);
+  uint64_t name_hash = hash_name(name);
+  entry_t* entry =
+      entry_t::create(name, value, _insert_count + 1, name_hash, hash_pair(name_hash, value), _resource);
   evict(evicted);
   ++_insert_count;
   ++_count;
   entry_at(_insert_count) = entry;
-  set.insert(*entry);
+  index_add(*entry);
   _current_size += new_entry_size;
   return entry;
 }
 
 void dynamic_table_t::grow_ring() {
-  std::vector<entry_t*> new_ring(ring.empty() ? 8 : ring.size() * 2);
+  size_t new_size = ring.empty() ? 8 : ring.size() * 2;
+  std::vector<entry_t*> new_ring(new_size);
+  std::vector<name_bucket_t> new_by_name(new_size);
+  std::vector<pair_bucket_t> new_by_pair(new_size);
   for (size_t c = oldest(); c <= _insert_count; ++c)
     new_ring[c & (new_ring.size() - 1)] = entry_at(c);
   ring.swap(new_ring);
+  by_name.swap(new_by_name);
+  by_pair.swap(new_by_pair);
+  // индексы строятся заново от старых записей к новым, так что более новые заменяют более старые
+  for (size_t c = oldest(); c <= _insert_count; ++c)
+    index_add(*entry_at(c));
+}
+
+void dynamic_table_t::index_add(entry_t& e) noexcept {
+  name_bucket_t& nb = bucket_for(by_name, e.name_hash);
+  nb.remove_if([&](const entry_t& x) { return has_name(x, e.name_hash, e.name()); });
+  nb.push_front(e);
+  pair_bucket_t& pb = bucket_for(by_pair, e.pair_hash);
+  pb.remove_if([&](const entry_t& x) { return has_pair(x, e.pair_hash, e.name(), e.value()); });
+  pb.push_front(e);
+}
+
+void dynamic_table_t::index_remove(entry_t& e) noexcept {
+  bucket_for(by_name, e.name_hash).remove_if([&](const entry_t& x) { return &x == &e; });
+  bucket_for(by_pair, e.pair_hash).remove_if([&](const entry_t& x) { return &x == &e; });
 }
 
 dynamic_table_t::evict_count_t dynamic_table_t::need_evict_to_fit(size_type size_limit) const noexcept {
@@ -98,7 +190,7 @@ void dynamic_table_t::evict(evict_count_t e) noexcept {
   assert(e.count <= _count);
   for (size_t c = oldest(), end = c + e.count; c != end; ++c) {
     entry_t*& entry = entry_at(c);
-    set.erase(set.iterator_to(*entry));
+    index_remove(*entry);
     entry_t::destroy(entry, _resource);
     entry = nullptr;
   }
@@ -124,15 +216,20 @@ void dynamic_table_t::update_size(size_type new_max_size) {
 
 find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) const noexcept {
   find_result_t r;
-  auto [b, e] = set.equal_range(name);
-  for (; b != e; ++b) {
-    if (b->name() == name) {
-      r.header_name_index = indexof(*b);
-      if (b->value() == value) {
-        r.value_indexed = true;
-        return r;
-      }
-    }
+  if (_count == 0)
+    return r;
+  uint64_t name_hash = hash_name(name);
+  const entry_t* e =
+      find_in(bucket_for(by_name, name_hash), [&](const entry_t& x) { return has_name(x, name_hash, name); });
+  if (!e)
+    return r;
+  r.header_name_index = indexof(*e);
+  uint64_t pair_hash = hash_pair(name_hash, value);
+  e = find_in(bucket_for(by_pair, pair_hash),
+              [&](const entry_t& x) { return has_pair(x, pair_hash, name, value); });
+  if (e) {
+    r.header_name_index = indexof(*e);
+    r.value_indexed = true;
   }
   return r;
 }
@@ -145,7 +242,10 @@ find_result_t dynamic_table_t::find(index_type name, std::string_view value) con
 }
 
 void dynamic_table_t::reset() noexcept {
-  set.clear();
+  for (name_bucket_t& b : by_name)
+    b.clear();
+  for (pair_bucket_t& b : by_pair)
+    b.clear();
   for (size_t c = oldest(); c <= _insert_count; ++c) {
     entry_t::destroy(entry_at(c), _resource);
     entry_at(c) = nullptr;
