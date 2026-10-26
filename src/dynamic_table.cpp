@@ -34,7 +34,8 @@ dynamic_table_t::dynamic_table_t(size_type max_size, std::pmr::memory_resource* 
 
 void dynamic_table_t::swap(dynamic_table_t& other) noexcept {
   using std::swap;
-  swap(entries, other.entries);
+  swap(ring, other.ring);
+  swap(_count, other._count);
   swap(set, other.set);
   swap(_current_size, other._current_size);
   swap(_max_size, other._max_size);
@@ -62,23 +63,47 @@ dynamic_table_t::entry_t* dynamic_table_t::add_entry(std::string_view name, std:
     reset();
     return nullptr;
   }
-  // Evict without freeing: name/value may point into entries being evicted.
-  // entry_t::create() copies them first, then we free the evicted entries.
-  auto evicted = evict_until_fits_into(_max_size - new_entry_size);
-  noexport::scope_exit e{
-      [&] { evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); }); }};
+  // name/value may point into evicted entries, so they are freed after create()
+  evict_count_t evicted = need_evict_to_fit(_max_size - new_entry_size);
+  // if throws, table is not changed
+  if (_count - evicted.count == ring.size())
+    grow_ring();
   entry_t* entry = entry_t::create(name, value, _insert_count + 1, _resource);
-  bool failed = true;
-  noexport::scope_exit e2{[&] {
-    if (failed)
-      entry_t::destroy(entry, _resource);
-  }};
-  entries.push_back(entry);
-  failed = false;
+  evict(evicted);
   ++_insert_count;
+  ++_count;
+  entry_at(_insert_count) = entry;
   set.insert(*entry);
   _current_size += new_entry_size;
   return entry;
+}
+
+void dynamic_table_t::grow_ring() {
+  std::vector<entry_t*> new_ring(ring.empty() ? 8 : ring.size() * 2);
+  for (size_t c = oldest(); c <= _insert_count; ++c)
+    new_ring[c & (new_ring.size() - 1)] = entry_at(c);
+  ring.swap(new_ring);
+}
+
+dynamic_table_t::evict_count_t dynamic_table_t::need_evict_to_fit(size_type size_limit) const noexcept {
+  evict_count_t r;
+  while (_current_size - r.bytes > size_limit) {
+    r.bytes += entry_size(*entry_at(oldest() + r.count));
+    ++r.count;
+  }
+  return r;
+}
+
+void dynamic_table_t::evict(evict_count_t e) noexcept {
+  assert(e.count <= _count);
+  for (size_t c = oldest(), end = c + e.count; c != end; ++c) {
+    entry_t*& entry = entry_at(c);
+    set.erase(set.iterator_to(*entry));
+    entry_t::destroy(entry, _resource);
+    entry = nullptr;
+  }
+  _count -= e.count;
+  _current_size -= e.bytes;
 }
 
 void dynamic_table_t::set_user_protocol_max_size(size_type new_max_size) noexcept {
@@ -93,9 +118,8 @@ void dynamic_table_t::update_size(size_type new_max_size) {
   // limit MUST be treated as a decoding error"
   if (new_max_size > _user_protocol_max_size)
     throw HPACK_PROTOCOL_ERROR(dynamic table max size exceeds limit determined by protocol);
-  auto evicted = evict_until_fits_into(new_max_size);
+  evict(need_evict_to_fit(new_max_size));
   _max_size = new_max_size;
-  evicted.clear_and_dispose([this](entry_t* e) { entry_t::destroy(e, _resource); });
 }
 
 find_result_t dynamic_table_t::find(std::string_view name, std::string_view value) const noexcept {
@@ -122,30 +146,19 @@ find_result_t dynamic_table_t::find(index_type name, std::string_view value) con
 
 void dynamic_table_t::reset() noexcept {
   set.clear();
-  for (entry_t* e : entries)
-    entry_t::destroy(e, _resource);
-  entries.clear();
-  _current_size = 0;
-}
-
-dynamic_table_t::entry_set_t dynamic_table_t::evict_until_fits_into(size_type bytes) noexcept {
-  entry_set_t evicted;
-  size_type i = 0;
-  for (; _current_size > bytes; ++i) {
-    _current_size -= entry_size(*entries[i]);
-    set.erase(set.iterator_to(*entries[i]));
-    evicted.insert(*entries[i]);
+  for (size_t c = oldest(); c <= _insert_count; ++c) {
+    entry_t::destroy(entry_at(c), _resource);
+    entry_at(c) = nullptr;
   }
-  // evicts should be rare operation
-  entries.erase(entries.begin(), entries.begin() + i);
-  return evicted;
+  _count = 0;
+  _current_size = 0;
 }
 
 table_entry dynamic_table_t::get_entry(index_type index) const noexcept {
   assert(index != 0 && index <= current_max_index());
   if (index < static_table_t::first_unused_index)
     return static_table_t::get_entry(index);
-  auto& e = *(&entries.back() - (index - static_table_t::first_unused_index));
+  const entry_t* e = entry_at(_insert_count - (index - static_table_t::first_unused_index));
   return table_entry{e->name(), e->value()};
 }
 
