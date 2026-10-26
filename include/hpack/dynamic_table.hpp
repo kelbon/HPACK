@@ -63,8 +63,12 @@ struct dynamic_table_t {
     std::string_view operator()(const entry_t&) const noexcept;
   };
 
-  // invariant: do not contain nullptrs
-  std::vector<entry_t*> entries;
+  // ring buffer of entries, entry with insert number 'c' is in ring[c & (ring.size() - 1)]
+  // ring.size() is 0 or power of 2
+  // invariant: _count <= ring.size(), live entries are not nullptrs
+  std::vector<entry_t*> ring;
+  // count of entries in table
+  size_type _count = 0;
 
   // sorted by name
   using entry_set_t = bi::multiset<entry_t, bi::constant_time_size<false>, bi::base_hook<entry_set_hook>,
@@ -158,7 +162,7 @@ struct dynamic_table_t {
 
   // min value is static_table_t::first_unused_index
   index_type current_max_index() const noexcept {
-    return entries.size() + static_table_t::first_unused_index - 1;
+    return _count + static_table_t::first_unused_index - 1;
   }
 
   // searches both static and dynamic table
@@ -178,8 +182,30 @@ struct dynamic_table_t {
   }
 
  private:
-  [[nodiscard]] entry_set_t evict_until_fits_into(size_type bytes) noexcept;
-  // precondition: entry now in 'entries'
+  // returns entry with insert number 'c'
+  entry_t*& entry_at(size_t c) noexcept {
+    return ring[c & (ring.size() - 1)];
+  }
+  entry_t* const& entry_at(size_t c) const noexcept {
+    return ring[c & (ring.size() - 1)];
+  }
+  // insert number of the oldest entry
+  // if table is empty, its insert number of the next entry (no entry to access)
+  size_t oldest() const noexcept {
+    return _insert_count - _count + 1;
+  }
+  // maintains invariant: rint.size() is power of 2 or 0
+  void grow_ring();
+
+  struct evict_count_t {
+    size_type count = 0;  // count of oldest entries to evict
+    size_type bytes = 0;  // size of these entries
+  };
+  // counts oldest entries which must be evicted for table to fit into 'size_limit' bytes, does not evict
+  evict_count_t need_evict_to_fit(size_type size_limit) const noexcept;
+  // removes and destroys oldest entries
+  void evict(evict_count_t) noexcept;
+  // precondition: entry now in table
   index_type indexof(const entry_t& e) const noexcept;
 };
 
