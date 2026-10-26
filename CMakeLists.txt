@@ -5,7 +5,6 @@ project(HPACK LANGUAGES CXX)
 
 option(HPACK_ENABLE_TESTING "enables testing" OFF)
 option(HPACK_USE_CPM "turn off to not download boost" ON)
-option(HPACK_ENABLE_BENCHMARKS "builds benchmarks" OFF)
 option(HPACK_ENABLE_SANITIZERS "enables tests with sanitizers. Ignored if HPACK_ENABLE_TESTING == 0" OFF)
 
 if (HPACK_ENABLE_SANITIZERS)
@@ -55,8 +54,4 @@ set_target_properties(hpacklib PROPERTIES
 if(HPACK_ENABLE_TESTING)
 	include(CTest)
 	add_subdirectory(tests)
-endif()
-
-if(HPACK_ENABLE_BENCHMARKS)
-	add_subdirectory(benchmarks)
 endif()

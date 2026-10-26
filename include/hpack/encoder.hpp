@@ -14,14 +14,16 @@ namespace hpack {
 //
 // precondition: 'name' is lowercase
 [[nodiscard]] inline bool is_volatile_header(std::string_view name) noexcept {
-  if (name == "date")
-    return true;
   if (name == "content-length")
     return true;
-  if (name == "expires")
-    return true;
-  if (name == "age")
-    return true;
+  // на самом деле меняются лишь раз в секунду, а за секунду отправляются сотни запросов и кеширование имеет
+  // смысл
+  // if (name == "date")
+  //  return true;
+  // if (name == "expires")
+  //  return true;
+  // if (name == "age")
+  //  return true;
   if (name == "content-range")
     return true;
   // session ids
