@@ -191,6 +191,9 @@ struct dynamic_table_t {
 
   // searches both static and dynamic table
   find_result_t find(std::string_view name, std::string_view value) const noexcept;
+  // returns index of newest entry with 'name' or 0 if not found
+  // Note: searches only dynamic table
+  index_type find_name(std::string_view name) const noexcept;
   // searches both static and dynamic table
   // precondition: name <= current_max_index()
   find_result_t find(index_type name, std::string_view value) const noexcept;

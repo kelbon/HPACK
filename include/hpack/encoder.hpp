@@ -26,6 +26,15 @@ namespace hpack {
   //  return true;
   if (name == "content-range")
     return true;
+  if (name == "location")
+    return true;
+  // version of resource and conditional requests with it
+  if (name == "etag")
+    return true;
+  if (name == "if-none-match")
+    return true;
+  if (name == "if-modified-since")
+    return true;
   // session ids
   if (name == "set-cookie")
     return true;
@@ -144,18 +153,28 @@ struct encoder {
   }
 
   // encodes header choosing representation by itself:
-  //  * volatile header (see is_volatile_header) is encoded without indexing, with name index from static
-  //    table if possible, so it does not evict useful entries from dynamic table
+  //  * volatile header (see is_volatile_header) or header bigger than 3/4 of dynamic table is encoded without
+  //    indexing, so it does not evict useful entries. Name is encoded as index if its in dynamic or static
+  //    table. Volatile header with unknown name is cached once to make its name known
   //  * header cached in dynamic table is encoded as index
   //  * otherwise header is cached, with name index (from dynamic or static table) if name is known
   //
   // Note: does not search name + value in static table, pseudoheaders are better encoded explicitly
   template <bool Huffman = false, Out O>
   O encode_auto(std::string_view name, std::string_view value, O out) {
-    if (is_volatile_header(name)) {
-      if (index_type i = static_table_t::find(name))
-        return encode_header_without_indexing<Huffman>(i, value, out);
-      return encode_header_without_indexing<Huffman>(name, value, out);
+    // entry bigger than 3/4 of table evicts almost whole table
+    bool too_big = uint64_t(name.size()) + value.size() + 32 > uint64_t(dyntab.max_size()) * 3 / 4;
+    if (too_big || is_volatile_header(name)) {
+      index_type name_index = dyntab.find_name(name);
+      if (!name_index)
+        name_index = static_table_t::find(name);
+      if (name_index)
+        return encode_header_without_indexing<Huffman>(name_index, value, out);
+      if (too_big)
+        return encode_header_without_indexing<Huffman>(name, value, out);
+      // unknown name (for example x-request-id): header is cached once, so next headers with this name
+      // will use its index instead of name literal
+      return encode_header_and_cache<Huffman>(name, value, out);
     }
     find_result_t r = dyntab.find(name, value);
     if (r.value_indexed)
