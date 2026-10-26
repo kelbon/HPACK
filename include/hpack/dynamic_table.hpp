@@ -6,7 +6,7 @@
 #include <cassert>
 #include <memory>
 
-#include <boost/intrusive/set.hpp>
+#include <boost/intrusive/slist.hpp>
 
 #include "hpack/basic_types.hpp"
 #include "hpack/static_table.hpp"
@@ -16,16 +16,26 @@ namespace hpack {
 namespace bi = boost::intrusive;
 
 struct dynamic_table_t {
-  using entry_set_hook = bi::set_base_hook<bi::link_mode<bi::normal_link>>;
+  using index_hook_t = bi::slist_member_hook<bi::link_mode<bi::normal_link>>;
 
-  struct entry_t : entry_set_hook {
+  struct entry_t {
+    // хуки хеш-индексов, см. 'by_name' и 'by_pair'
+    index_hook_t name_hook;
+    index_hook_t pair_hook;
+    const uint64_t name_hash;
+    const uint64_t pair_hash;  // хеш имени + значения
     const size_type name_end;
     const size_type value_end;
     const size_t _insert_c;
     char data[];
 
-    entry_t(size_type name_len, size_type value_len, size_t insert_c) noexcept
-        : name_end(name_len), value_end(name_len + value_len), _insert_c(insert_c) {
+    entry_t(size_type name_len, size_type value_len, size_t insert_c, uint64_t name_hash,
+            uint64_t pair_hash) noexcept
+        : name_hash(name_hash),
+          pair_hash(pair_hash),
+          name_end(name_len),
+          value_end(name_len + value_len),
+          _insert_c(insert_c) {
     }
 
     std::string_view name() const noexcept {
@@ -38,11 +48,11 @@ struct dynamic_table_t {
       return value_end;
     }
 
-    static entry_t* create(std::string_view name, std::string_view value, size_t insert_c,
-                           std::pmr::memory_resource* resource) {
+    static entry_t* create(std::string_view name, std::string_view value, size_t insert_c, uint64_t name_hash,
+                           uint64_t pair_hash, std::pmr::memory_resource* resource) {
       assert(resource);
       void* bytes = resource->allocate(sizeof(entry_t) + name.size() + value.size(), alignof(entry_t));
-      entry_t* e = new (bytes) entry_t(name.size(), value.size(), insert_c);
+      entry_t* e = new (bytes) entry_t(name.size(), value.size(), insert_c, name_hash, pair_hash);
       if (!name.empty())
         memcpy(+e->data, name.data(), name.size());
       if (!value.empty())
@@ -58,11 +68,6 @@ struct dynamic_table_t {
   };
 
  private:
-  struct key_of_entry {
-    using type = std::string_view;
-    std::string_view operator()(const entry_t&) const noexcept;
-  };
-
   // ring buffer of entries, entry with insert number 'c' is in ring[c & (ring.size() - 1)]
   // ring.size() is 0 or power of 2
   // invariant: _count <= ring.size(), live entries are not nullptrs
@@ -70,11 +75,30 @@ struct dynamic_table_t {
   // count of entries in table
   size_type _count = 0;
 
-  // sorted by name
-  using entry_set_t = bi::multiset<entry_t, bi::constant_time_size<false>, bi::base_hook<entry_set_hook>,
-                                   bi::key_of_value<key_of_entry>>;
+  // корзина хеш-индекса: односвязный интрузивный список записей, ключ которых попал в эту корзину.
+  // linear<true>: список заканчивается nullptr (а не замкнут на заголовок), поэтому список — это просто
+  // указатель на первую запись и его можно хранить в std::vector
+  template <index_hook_t entry_t::* Hook>
+  using bucket_t = bi::slist<entry_t, bi::member_hook<entry_t, index_hook_t, Hook>, bi::linear<true>,
+                             bi::constant_time_size<false>, bi::cache_last<false>>;
+  using name_bucket_t = bucket_t<&entry_t::name_hook>;
+  using pair_bucket_t = bucket_t<&entry_t::pair_hook>;
+  static_assert(sizeof(name_bucket_t) == sizeof(void*));
 
-  entry_set_t set;
+  // Хеш-индексы для find:
+  //   by_name: имя -> самая новая запись с этим именем,
+  //   by_pair: имя + значение -> самая новая запись с ними.
+  // Количество корзин всегда равно ring.size(), корзина выбирается по hash & (size - 1).
+  //
+  // В таблице может быть несколько записей с одним ключом, но в индексе лежит только самая новая из них:
+  // при добавлении новой записи старая с тем же ключом удаляется из списка корзины (см. index_add).
+  // Поэтому в каждой корзине все ключи разные, и поиск не перебирает дубликаты.
+  // Это корректно, потому что записи вытесняются строго от старых к новым: самая новая запись с ключом
+  // вытесняется последней, когда других записей с этим ключом уже нет. Значит, пока ключ есть в таблице,
+  // в индексе по нему лежит живая запись.
+  std::vector<name_bucket_t> by_name;
+  std::vector<pair_bucket_t> by_pair;
+
   // in bytes
   // invariant: <= _max_size
   size_type _current_size = 0;
@@ -205,6 +229,10 @@ struct dynamic_table_t {
   evict_count_t need_evict_to_fit(size_type size_limit) const noexcept;
   // removes and destroys oldest entries
   void evict(evict_count_t) noexcept;
+  // добавляет 'e' в хеш-индексы, более старая запись с тем же ключом (если есть) удаляется из индекса
+  void index_add(entry_t& e) noexcept;
+  // удаляет 'e' из хеш-индексов, если она там есть (то есть если это самая новая запись со своим ключом)
+  void index_remove(entry_t& e) noexcept;
   // precondition: entry now in table
   index_type indexof(const entry_t& e) const noexcept;
 };
