@@ -71,12 +71,23 @@ TEST(encode_auto) {
     dec.decode_header(in, block.data() + block.size(), h);
     error_if(in != block.data() + block.size());
     error_if(h.name.str() != name || h.value.str() != value);
+    error_if(enc.dyntab.current_size() != dec.dyntab.current_size());
     return block.size();
   };
   // volatile: not cached, name index from static table (28 does not fit into 4 bit prefix: 2 bytes)
   error_if(roundtrip("content-length", "12345") != 2 + 1 + 5);
+  error_if(enc.dyntab.current_size() != 0);
+  // volatile with unknown name: cached once
   error_if(roundtrip("x-request-id", "abc") != 1 + 1 + 12 + 1 + 3);
-  error_if(enc.dyntab.current_size() != 0 || dec.dyntab.current_size() != 0);
+  size_t size = enc.dyntab.current_size();
+  error_if(size == 0);
+  // then not cached, name index from dynamic table (62: 2 bytes)
+  error_if(roundtrip("x-request-id", "def") != 2 + 1 + 3);
+  error_if(enc.dyntab.current_size() != size);
+  // too big for table: not cached
+  std::string big(enc.dyntab.max_size() * 3 / 4, 'x');
+  error_if(roundtrip("x-big", big) != 1 + 1 + 5 + 3 + big.size());
+  error_if(enc.dyntab.current_size() != size);
   // static name: cached with name index from static table
   error_if(roundtrip("content-type", "application/json") != 1 + 1 + 16);
   // cached: index
@@ -84,7 +95,6 @@ TEST(encode_auto) {
   // new name: cached with name literal, then name index from dynamic table
   error_if(roundtrip("x-custom", "a") != 1 + 1 + 8 + 1 + 1);
   error_if(roundtrip("x-custom", "b") != 1 + 1 + 1);
-  error_if(enc.dyntab.current_size() != dec.dyntab.current_size());
 }
 
 TEST(decode_status_invalid) {

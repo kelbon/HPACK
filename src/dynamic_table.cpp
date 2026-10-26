@@ -234,6 +234,15 @@ find_result_t dynamic_table_t::find(std::string_view name, std::string_view valu
   return r;
 }
 
+index_type dynamic_table_t::find_name(std::string_view name) const noexcept {
+  if (_count == 0)
+    return 0;
+  uint64_t name_hash = hash_name(name);
+  const entry_t* e =
+      find_in(bucket_for(by_name, name_hash), [&](const entry_t& x) { return has_name(x, name_hash, name); });
+  return e ? indexof(*e) : 0;
+}
+
 find_result_t dynamic_table_t::find(index_type name, std::string_view value) const noexcept {
   assert(name <= current_max_index());
   if (name == 0) [[unlikely]]
