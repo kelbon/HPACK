@@ -8,6 +8,46 @@
 
 namespace hpack {
 
+// true for headers which values usually change from message to message
+// Caching them in dynamic table is useless
+// See encoder::encode_auto
+//
+// precondition: 'name' is lowercase
+[[nodiscard]] inline bool is_volatile_header(std::string_view name) noexcept {
+  if (name == "date")
+    return true;
+  if (name == "content-length")
+    return true;
+  if (name == "expires")
+    return true;
+  if (name == "age")
+    return true;
+  if (name == "content-range")
+    return true;
+  // session ids
+  if (name == "set-cookie")
+    return true;
+  // remaining deadline of gRPC call
+  if (name == "grpc-timeout")
+    return true;
+  // ids of request / trace (W3C Trace Context, Zipkin B3)
+  if (name == "x-request-id")
+    return true;
+  if (name == "x-correlation-id")
+    return true;
+  if (name == "traceparent")
+    return true;
+  if (name == "tracestate")
+    return true;
+  if (name == "x-b3-traceid")
+    return true;
+  if (name == "x-b3-spanid")
+    return true;
+  if (name == "x-b3-parentspanid")
+    return true;
+  return false;
+}
+
 struct encoder {
   dynamic_table_t dyntab;
 
@@ -98,6 +138,29 @@ struct encoder {
       // its likely, because only first call will be not cached
       return encode_header_fully_indexed(r.header_name_index, out);
     }
+    return encode_header_and_cache<Huffman>(name, value, out);
+  }
+
+  // encodes header choosing representation by itself:
+  //  * volatile header (see is_volatile_header) is encoded without indexing, with name index from static
+  //    table if possible, so it does not evict useful entries from dynamic table
+  //  * header cached in dynamic table is encoded as index
+  //  * otherwise header is cached, with name index (from dynamic or static table) if name is known
+  //
+  // Note: does not search name + value in static table, pseudoheaders are better encoded explicitly
+  template <bool Huffman = false, Out O>
+  O encode_auto(std::string_view name, std::string_view value, O out) {
+    if (is_volatile_header(name)) {
+      if (index_type i = static_table_t::find(name))
+        return encode_header_without_indexing<Huffman>(i, value, out);
+      return encode_header_without_indexing<Huffman>(name, value, out);
+    }
+    find_result_t r = dyntab.find(name, value);
+    if (r.value_indexed)
+      return encode_header_fully_indexed(r.header_name_index, out);
+    index_type name_index = r ? r.header_name_index : static_table_t::find(name);
+    if (name_index)
+      return encode_header_and_cache<Huffman>(name_index, value, out);
     return encode_header_and_cache<Huffman>(name, value, out);
   }
 

@@ -127,6 +127,15 @@ void bench_encode_blocks() {
     responses.push_back(response_headers(i));
   size_t headers_count = blocks_count * responses[0].size();
   bytes_t buf;
+  bench("encode response blocks (encode_auto)", 1000, headers_count, "header", [&] {
+    hpack::encoder enc;
+    for (auto& hdrs : responses) {
+      buf.clear();
+      for (auto& h : hdrs)
+        enc.encode_auto(h.name, h.value, std::back_inserter(buf));
+      sink += buf.size();
+    }
+  });
   bench("encode response blocks (encode_with_cache)", 1000, headers_count, "header", [&] {
     hpack::encoder enc;
     for (auto& hdrs : responses) {
