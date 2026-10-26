@@ -60,6 +60,33 @@ TEST(decode_integer_overflow_in_last_byte) {
 }
 
 // ":status" is three digits in range [100, 599]
+TEST(encode_auto) {
+  hpack::encoder enc;
+  hpack::decoder dec;
+  auto roundtrip = [&](std::string_view name, std::string_view value) {
+    std::vector<uint8_t> block;
+    enc.encode_auto(name, value, std::back_inserter(block));
+    const hpack::byte_t* in = block.data();
+    hpack::header_view h;
+    dec.decode_header(in, block.data() + block.size(), h);
+    error_if(in != block.data() + block.size());
+    error_if(h.name.str() != name || h.value.str() != value);
+    return block.size();
+  };
+  // volatile: not cached, name index from static table (28 does not fit into 4 bit prefix: 2 bytes)
+  error_if(roundtrip("content-length", "12345") != 2 + 1 + 5);
+  error_if(roundtrip("x-request-id", "abc") != 1 + 1 + 12 + 1 + 3);
+  error_if(enc.dyntab.current_size() != 0 || dec.dyntab.current_size() != 0);
+  // static name: cached with name index from static table
+  error_if(roundtrip("content-type", "application/json") != 1 + 1 + 16);
+  // cached: index
+  error_if(roundtrip("content-type", "application/json") != 1);
+  // new name: cached with name literal, then name index from dynamic table
+  error_if(roundtrip("x-custom", "a") != 1 + 1 + 8 + 1 + 1);
+  error_if(roundtrip("x-custom", "b") != 1 + 1 + 1);
+  error_if(enc.dyntab.current_size() != dec.dyntab.current_size());
+}
+
 TEST(decode_status_invalid) {
   for (std::string_view v : {"-50", "-1 ", "0  ", "2xx", "099", "1e2", "600"}) {
     hpack::encoder enc;
@@ -1480,6 +1507,7 @@ int main() {
   test_encode_decode_huffman1();
   test_decode_integer_encode_large_then_decode();
   test_decode_integer_overflow_in_last_byte();
+  test_encode_auto();
   test_decode_status_invalid();
   test_stream_decoder_empty_last_chunk();
   test_decode_incremental_indexing_evict_referenced_name();
