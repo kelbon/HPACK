@@ -7,6 +7,7 @@
 #include <span>
 #include <utility>
 #include <vector>
+#include <cstdlib>  // malloc/free
 
 namespace hpack {
 
