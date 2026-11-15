@@ -16,11 +16,16 @@ namespace hpack {
 // may store string_view (AND NOT OWN IT!), may store huffman decoded string
 // and in this case memory will be allocated and owned
 // tries to reuse memory when new huffman string setted and memory already allocated
+// owned buffer is kept while string_view is setted (set_not_huffman), so one decoded_string
+// reused for many headers allocates only when bigger buffer required
 struct decoded_string {
  private:
+  // points to `buf` or to not owned memory
   const char* data = nullptr;
+  // owned memory, capacity is 1 << allocated_sz_log2
+  char* buf = nullptr;
   size_type sz = 0;
-  // != -1 after decoding huffman str
+  // != -1 if `buf` allocated
   // default -1 for removing ambiguity between 'not allocated' and 'allocated 1 byte' (log2(1) == 0)
   int8_t allocated_sz_log2 = -1;
 
@@ -50,8 +55,8 @@ struct decoded_string {
 
   void set_huffman(const char* ptr, size_type len);
   // Note: *this will not own `ptr` memory, only contain a view
-  void set_not_huffman(const char* ptr, size_type len) {
-    reset();
+  // owned buffer (if any) is not freed and will be reused
+  void set_not_huffman(const char* ptr, size_type len) noexcept {
     data = ptr;
     sz = len;
   }
@@ -70,6 +75,7 @@ struct decoded_string {
 
   void swap(decoded_string& other) noexcept {
     std::swap(data, other.data);
+    std::swap(buf, other.buf);
     std::swap(sz, other.sz);
     std::swap(allocated_sz_log2, other.allocated_sz_log2);
   }
@@ -82,12 +88,24 @@ struct decoded_string {
     reset();
   }
 
+  // frees owned memory
   void reset() noexcept {
-    if (allocated_sz_log2 != -1)
-      free((void*)data);
+    free(buf);
+    buf = nullptr;
     data = nullptr;
     sz = 0;
     allocated_sz_log2 = -1;
+  }
+
+  // makes string empty, but keeps owned memory for reuse
+  void clear() noexcept {
+    data = nullptr;
+    sz = 0;
+  }
+
+  // true if str() points to owned memory (not a view)
+  [[nodiscard]] bool owns_data() const noexcept {
+    return data && data == buf;
   }
 
   [[nodiscard]] size_t bytes_allocated() const noexcept {

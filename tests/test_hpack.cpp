@@ -1489,6 +1489,365 @@ TEST(decode_incremental_indexing_keeps_huffman_buffers) {
   error_if(hdr.value.str().data() != value_ptr);
 }
 
+// ---------- decoded_string: owned buffer is kept while a view is set ----------
+
+static void decode_huffman_into(hpack::decoded_string& s, std::string_view str) {
+  bytes_t enc;
+  hpack::encode_string_huffman(str, std::back_inserter(enc));
+  const hpack::byte_t* in = enc.data();
+  hpack::decode_string(in, enc.data() + enc.size(), s);
+  error_if(in != enc.data() + enc.size());
+}
+
+static void decode_raw_into(hpack::decoded_string& s, const bytes_t& enc) {
+  const hpack::byte_t* in = enc.data();
+  hpack::decode_string(in, enc.data() + enc.size(), s);
+  error_if(in != enc.data() + enc.size());
+}
+
+// huffman -> view -> huffman: buffer survives the view and is reused without reallocation
+TEST(decoded_string_keeps_buffer_for_views) {
+  hpack::decoded_string s;
+  decode_huffman_into(s, "hello world");
+  error_if(s != "hello world");
+  error_if(!s.owns_data());
+  const size_t cap = s.bytes_allocated();
+  error_if(cap == 0);
+  const char* buf = s.str().data();
+
+  // view set by assignment
+  std::string_view v = "plain value";
+  s = v;
+  error_if(s != v);
+  error_if(s.str().data() != v.data());  // points to the view, not into own buffer
+  error_if(s.owns_data());
+  error_if(s.bytes_allocated() != cap);  // buffer is kept
+
+  // view set explicitly
+  s.set_not_huffman(v.data(), 5);
+  error_if(s != "plain");
+  error_if(s.owns_data());
+  error_if(s.bytes_allocated() != cap);
+
+  // view set by decoding not huffman encoded literal
+  bytes_t raw;
+  hpack::encode_string("not huffman", std::back_inserter(raw));
+  decode_raw_into(s, raw);
+  error_if(s != "not huffman");
+  error_if(s.owns_data());
+  error_if(s.str().data() != (const char*)raw.data() + 1);
+  error_if(s.bytes_allocated() != cap);
+
+  // huffman again: same buffer
+  decode_huffman_into(s, "hello");
+  error_if(s != "hello");
+  error_if(!s.owns_data());
+  error_if(s.str().data() != buf);
+  error_if(s.bytes_allocated() != cap);
+
+  // many alternations do not reallocate
+  for (int i = 0; i < 100; ++i) {
+    s = std::string_view("view");
+    decode_huffman_into(s, i % 2 ? "hello world" : "x");
+    error_if(s.str().data() != buf);
+    error_if(s.bytes_allocated() != cap);
+  }
+  error_if(s != "hello world");
+
+  s.reset();
+  error_if(s);
+  error_if(s.owns_data());
+  error_if(s.bytes_allocated());
+}
+
+// clear() empties string, but keeps buffer (unlike reset())
+TEST(decoded_string_clear) {
+  hpack::decoded_string s;
+  s.clear();  // on empty
+  error_if(s);
+  error_if(s.bytes_allocated());
+
+  decode_huffman_into(s, "some huffman string");
+  const size_t cap = s.bytes_allocated();
+  const char* buf = s.str().data();
+  s.clear();
+  error_if(s);
+  error_if(s.str() != "");
+  error_if(s.owns_data());
+  error_if(s.bytes_allocated() != cap);
+  // reused after clear
+  decode_huffman_into(s, "short");
+  error_if(s != "short");
+  error_if(s.str().data() != buf);
+
+  // view, then clear: buffer still kept
+  s = std::string_view("view");
+  s.clear();
+  error_if(s);
+  error_if(s.bytes_allocated() != cap);
+
+  // reset after clear frees
+  s.reset();
+  error_if(s.bytes_allocated());
+  s.reset();
+  s.clear();
+  error_if(s.bytes_allocated());
+}
+
+// move and swap carry the owned buffer even when str() is a view (ASan checks double free / leaks)
+TEST(decoded_string_move_swap_buffer_and_view) {
+  std::string_view view = "a view";
+  hpack::decoded_string a;
+  decode_huffman_into(a, std::string(40, 'a'));
+  const size_t cap_a = a.bytes_allocated();
+  const char* buf_a = a.str().data();
+  a = view;  // buffer + view
+
+  hpack::decoded_string b;
+  decode_huffman_into(b, "bbbb");
+  const size_t cap_b = b.bytes_allocated();
+  const char* buf_b = b.str().data();
+
+  swap(a, b);
+  error_if(a != "bbbb" || !a.owns_data() || a.str().data() != buf_b || a.bytes_allocated() != cap_b);
+  error_if(b != view || b.owns_data() || b.str().data() != view.data() || b.bytes_allocated() != cap_a);
+
+  // move constructor
+  hpack::decoded_string c(std::move(b));
+  error_if(c != view || c.owns_data() || c.bytes_allocated() != cap_a);
+  error_if(b || b.bytes_allocated() || b.owns_data());  // moved-from is empty
+
+  // c still owns buf_a: next huffman decode into c reuses it
+  decode_huffman_into(c, "reuse");
+  error_if(c != "reuse" || c.str().data() != buf_a || c.bytes_allocated() != cap_a);
+
+  // move assignment (swap semantic)
+  c = std::string_view("view again");
+  c = std::move(a);
+  error_if(c != "bbbb" || !c.owns_data() || c.str().data() != buf_b);
+  error_if(a != "view again" || a.owns_data() || a.bytes_allocated() != cap_a);
+
+  // self move keeps value
+  c = std::move(c);
+  error_if(c != "bbbb");
+}
+
+// allocate_and_set_not_huffman when str() is a view, but buffer is already owned
+TEST(decoded_string_allocate_and_set_not_huffman_reuses_buffer) {
+  hpack::decoded_string s;
+  decode_huffman_into(s, "0123456789abcdef0123456789abcdef");
+  const size_t cap = s.bytes_allocated();
+  const char* buf = s.str().data();
+
+  // view fits into buffer: copied into it, no reallocation
+  std::string src = "fits";
+  s = std::string_view(src);
+  error_if(s.owns_data());
+  s.allocate_and_set_not_huffman(s.str());
+  error_if(s != "fits" || !s.owns_data() || s.str().data() != buf || s.bytes_allocated() != cap);
+  src.assign(src.size(), 'X');
+  error_if(s != "fits");  // owns its copy
+
+  // view does not fit: reallocated, old buffer freed (ASan), new owned
+  std::string big(cap * 2 + 1, 'z');
+  s = std::string_view(big);
+  s.allocate_and_set_not_huffman(s.str());
+  error_if(s != std::string_view(big) || !s.owns_data());
+  error_if(s.bytes_allocated() != std::bit_ceil(big.size()));
+  error_if(s.str().data() == big.data());
+
+  // empty view into owned buffer
+  s = std::string_view();
+  s.allocate_and_set_not_huffman(s.str());
+  error_if(s);
+  error_if(s.bytes_allocated() != std::bit_ceil(big.size()));
+}
+
+// invalid huffman: exception, string is empty, buffer is kept and usable
+TEST(decoded_string_invalid_huffman) {
+  // H bit, length 1, '0' (5 bit code 00000) followed by zero padding: padding must be EOS prefix (ones)
+  const bytes_t bad = {0x81, 0x00};
+  for (bool with_buffer : {false, true}) {
+    hpack::decoded_string s;
+    size_t cap = 0;
+    const char* buf = nullptr;
+    if (with_buffer) {
+      decode_huffman_into(s, "previous value");
+      cap = s.bytes_allocated();
+      buf = s.str().data();
+    }
+    bool thrown = false;
+    try {
+      decode_raw_into(s, bad);
+    } catch (hpack::protocol_error&) {
+      thrown = true;
+    }
+    error_if(!thrown);
+    error_if(s);
+    error_if(s.str() != "");
+    error_if(s.owns_data());
+    if (with_buffer)
+      error_if(s.bytes_allocated() != cap);
+    // still usable
+    decode_huffman_into(s, "next");
+    error_if(s != "next");
+    if (with_buffer)
+      error_if(s.str().data() != buf);
+  }
+}
+
+// ---------- decoder: one long-lived header_view must decode exactly as fresh ones ----------
+
+namespace {
+
+struct dyntab_snapshot {
+  hpack::size_type size = 0;
+  hpack::size_type max_size = 0;
+  hpack::index_type max_index = 0;
+  headers_t entries;
+
+  bool operator==(const dyntab_snapshot&) const = default;
+};
+
+dyntab_snapshot snapshot(const hpack::dynamic_table_t& t) {
+  dyntab_snapshot r{t.current_size(), t.max_size(), t.current_max_index(), {}};
+  for (hpack::index_type i = hpack::static_table_t::first_unused_index; i <= t.current_max_index(); ++i) {
+    hpack::table_entry e = t.get_entry(i);
+    r.entries.emplace_back(std::string(e.name), std::string(e.value));
+  }
+  return r;
+}
+
+std::string random_string(std::mt19937& gen) {
+  std::uniform_int_distribution<int> kind(0, 9);
+  std::uniform_int_distribution<int> len_small(0, 40);
+  std::uniform_int_distribution<int> len_big(41, 3000);
+  std::uniform_int_distribution<int> printable('!', '~');
+  std::uniform_int_distribution<int> any_byte(0, 255);
+  int k = kind(gen);
+  size_t len = k < 7 ? len_small(gen) : len_big(gen);  // sometimes big, to grow buffers
+  std::string s(len, '\0');
+  bool binary = k == 9;  // huffman covers every octet
+  for (char& c : s)
+    c = char(binary ? any_byte(gen) : printable(gen));
+  return s;
+}
+
+}  // namespace
+
+// Random header blocks mixing every representation (indexed, literal with/without/never indexing, name by
+// index or literal, huffman or not, dynamic table size updates). Each block is decoded by:
+//  * a decoder with one header_view living for the whole test (buffers kept across blocks)
+//  * a decoder with a fresh header_view for every header (no reuse at all)
+// Both must produce the expected headers and identical dynamic table state.
+TEST(header_view_reuse_differential) {
+  std::mt19937 gen(12345);
+  constexpr hpack::size_type table_size = 1024;  // small, so eviction happens often
+  hpack::encoder enc(table_size);
+  hpack::decoder dec_reused(table_size);
+  hpack::decoder dec_fresh(table_size);
+  hpack::header_view reused;
+  size_t prev_name_cap = 0, prev_value_cap = 0;
+
+  const std::string_view names[] = {":path",  ":authority", "content-type", "accept-encoding",
+                                    "cookie", "user-agent", "x-custom",     "x-other-custom-header",
+                                    "",       "a"};
+  std::uniform_int_distribution<int> repr(0, 7);
+  std::uniform_int_distribution<int> coin(0, 1);
+  std::uniform_int_distribution<int> headers_count(1, 20);
+  std::uniform_int_distribution<int> name_choice(0, std::size(names));  // == size: random name
+  std::uniform_int_distribution<int> update_chance(0, 15);
+  std::uniform_int_distribution<int> new_table_size(0, table_size);
+
+  for (int block = 0; block < 3000; ++block) {
+    bytes_t bytes;
+    auto out = std::back_inserter(bytes);
+    headers_t expected;
+
+    if (update_chance(gen) == 0)  // size update only at block start (RFC 7541 4.2)
+      enc.encode_dynamic_table_size_update(new_table_size(gen), out);
+
+    for (int h = headers_count(gen); h > 0; --h) {
+      int r = repr(gen);
+      bool huffman = coin(gen);
+      std::string value = random_string(gen);
+      int nc = name_choice(gen);
+      std::string name = nc == int(std::size(names)) ? random_string(gen) : std::string(names[nc]);
+      hpack::index_type max_index = enc.dyntab.current_max_index();
+      std::uniform_int_distribution<hpack::index_type> any_index(1, max_index);
+      // name by index: name is taken from table before encoding (encoding may evict it)
+      bool by_index = coin(gen);
+      hpack::index_type name_index = any_index(gen);
+      if (by_index)
+        name = std::string(enc.dyntab.get_entry(name_index).name);
+
+      auto encode_literal = [&]<bool H>() {
+        switch (r) {
+          case 1:
+          case 2:
+            by_index ? enc.encode_header_and_cache<H>(name_index, value, out)
+                     : enc.encode_header_and_cache<H>(name, value, out);
+            break;
+          case 3:
+          case 4:
+            by_index ? enc.encode_header_without_indexing<H>(name_index, value, out)
+                     : enc.encode_header_without_indexing<H>(name, value, out);
+            break;
+          default:
+            by_index ? enc.encode_header_never_indexing<H>(name_index, value, out)
+                     : enc.encode_header_never_indexing<H>(name, value, out);
+            break;
+        }
+      };
+      if (r == 0) {  // fully indexed
+        hpack::table_entry e = enc.dyntab.get_entry(name_index);
+        expected.emplace_back(std::string(e.name), std::string(e.value));
+        enc.encode_header_fully_indexed(name_index, out);
+        continue;
+      }
+      expected.emplace_back(name, value);
+      if (huffman)
+        encode_literal.template operator()<true>();
+      else
+        encode_literal.template operator()<false>();
+    }
+
+    // decode with long-lived header_view
+    headers_t got_reused;
+    const hpack::byte_t* in = bytes.data();
+    const hpack::byte_t* e = in + bytes.size();
+    while (in != e) {
+      dec_reused.decode_header(in, e, reused);
+      // buffers are never freed while decoding, only grow
+      error_if(reused.name.bytes_allocated() < prev_name_cap);
+      error_if(reused.value.bytes_allocated() < prev_value_cap);
+      prev_name_cap = reused.name.bytes_allocated();
+      prev_value_cap = reused.value.bytes_allocated();
+      if (reused)
+        got_reused.emplace_back(std::string(reused.name.str()), std::string(reused.value.str()));
+    }
+
+    // decode with fresh header_view for every header
+    headers_t got_fresh;
+    in = bytes.data();
+    while (in != e) {
+      hpack::header_view fresh;
+      dec_fresh.decode_header(in, e, fresh);
+      if (fresh)
+        got_fresh.emplace_back(std::string(fresh.name.str()), std::string(fresh.value.str()));
+    }
+
+    // empty names are not reported by header_view::operator bool, filter expectations the same way
+    std::erase_if(expected, [](auto& h) { return h.first.empty(); });
+    error_if(got_reused != expected);
+    error_if(got_fresh != expected);
+    error_if(snapshot(dec_reused.dyntab) != snapshot(dec_fresh.dyntab));
+    error_if(snapshot(dec_reused.dyntab) != snapshot(enc.dyntab));
+  }
+  // buffers really were reused (test is meaningful)
+  error_if(prev_name_cap == 0 || prev_value_cap == 0);
+}
+
 int main() {
   static_assert(hpack::noexport::can_insert_many<std::vector<hpack::byte_t>>);
   static_assert(hpack::noexport::can_insert_many<std::vector<char>>);
@@ -1500,6 +1859,12 @@ int main() {
   test_decode_incremental_indexing_empty_strings_do_not_fit();
   test_decode_incremental_indexing_evict_referenced_name_huffman_value();
   test_decode_incremental_indexing_keeps_huffman_buffers();
+  test_decoded_string_keeps_buffer_for_views();
+  test_decoded_string_clear();
+  test_decoded_string_move_swap_buffer_and_view();
+  test_decoded_string_allocate_and_set_not_huffman_reuses_buffer();
+  test_decoded_string_invalid_huffman();
+  test_header_view_reuse_differential();
   test_dyntab_huge_entry();
   test_stream_decoder_big_str();
   test_stream_decoder();

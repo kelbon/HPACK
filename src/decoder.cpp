@@ -14,55 +14,51 @@ namespace hpack {
   return size_t(huffman_str_len) * 8 / 5;
 }
 
-void decoded_string::set_huffman(const char* ptr, size_type len) {
-  // also handles case when len == 0
-  if (bytes_allocated() >= max_huffman_string_size_after_decode(len)) {
-    // const cast because im owner of pointer (its allocated by malloc)
-    char* end = huffman_decode((In)ptr, len, const_cast<char*>(data));
-    sz = end - data;
-  } else {
-    size_t sz_to_allocate = std::bit_ceil(max_huffman_string_size_after_decode(len));
-    auto was_allocated = allocated_sz_log2;
-    allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
-    const char* old_data = data;
-    data = (char*)malloc(sz_to_allocate);
-    bool failed = true;
-    noexport::scope_exit free_mem{[&] {
-      if (failed) {
-        free((void*)data);
-        data = old_data;
-        allocated_sz_log2 = was_allocated;
-      } else {
-        if (was_allocated != -1)
-          free((void*)old_data);
-      }
-    }};
-    if (!data)
-      throw std::bad_alloc();
-    // recursive call into branch where we have enough memory
-    set_huffman(ptr, len);
+// ensures `buf` has atleast `len` bytes, content of `buf` is not preserved
+static char* reserve_buffer(char*& buf, int8_t& allocated_sz_log2, size_t len) {
+  size_t allocated = allocated_sz_log2 == -1 ? 0 : (size_t(1) << allocated_sz_log2);
+  if (allocated >= len)
+    return buf;
+  size_t sz_to_allocate = std::bit_ceil(len);
+  char* newbuf = (char*)malloc(sz_to_allocate);
+  if (!newbuf)
+    throw std::bad_alloc();
+  free(buf);
+  buf = newbuf;
+  allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
+  return buf;
+}
 
-    failed = false;
-  }
+void decoded_string::set_huffman(const char* ptr, size_type len) {
+  // `ptr` never points into `buf` (its encoded bytes from input)
+  // empty while decoding: if decoding throws, string is empty and buffer is still owned
+  data = nullptr;
+  sz = 0;
+  // also handles case when len == 0
+  char* out = reserve_buffer(buf, allocated_sz_log2, max_huffman_string_size_after_decode(len));
+  char* end = huffman_decode((In)ptr, len, out);
+  data = out;
+  sz = end - out;
 }
 
 void decoded_string::allocate_and_set_not_huffman(const char* ptr, size_type len) {
   if (bytes_allocated() >= len) {
+    // `ptr` may point into `buf`
     if (len > 0)
-      memmove(const_cast<char*>(data), ptr, len);
-    sz = len;
+      memmove(buf, ptr, len);
   } else {
     size_t sz_to_allocate = std::bit_ceil(len);
-    char* newdata = (char*)malloc(sz_to_allocate);
-    if (!newdata)
+    char* newbuf = (char*)malloc(sz_to_allocate);
+    if (!newbuf)
       throw std::bad_alloc();
     if (len > 0)
-      memcpy(newdata, ptr, len);
-    reset();
-    data = newdata;
-    sz = len;
+      memcpy(newbuf, ptr, len);
+    free(buf);
+    buf = newbuf;
     allocated_sz_log2 = std::bit_width(sz_to_allocate) - 1;
   }
+  data = buf;
+  sz = len;
 }
 
 // decodes partly indexed / new-name pairs
@@ -87,7 +83,7 @@ static void decode_header_incremental_indexing(In& in, In e, dynamic_table_t& dy
   decode_header_impl(in, e, 6, dyntab, out);
   // здесь в out имя может ссылаться на таблицу (если не Хаффман), а значение ссылается на байты под [in, e]
   // при add_entry имя может быть вытеснено, поэтому это дополнительно проверяется
-  const bool name_is_view = out.name.bytes_allocated() == 0;
+  const bool name_is_view = !out.name.owns_data();
   if (!dyntab.can_fit_entry(out.name.str(), out.value.str())) [[unlikely]] {
     if (name_is_view)
       out.name.allocate_and_set_not_huffman(out.name.str());
@@ -140,8 +136,8 @@ void decoder::decode_header(In& in, In e, header_view& out) {
     return decode_header_incremental_indexing(in, e, dyntab, out);
   if (*in & 0b0010'0000) {
     dyntab.update_size(decode_dynamic_table_size_update(in, e));
-    out.name.reset();
-    out.value.reset();
+    out.name.clear();
+    out.value.clear();
     return;
   }
   if (*in & 0b0001'0000)
